@@ -291,6 +291,36 @@ test('a drive-root system-info fallback stays absolute', async () => {
   })
 })
 
+describe("session create backend header", () => {
+  test("a Claude create carries the backend header and the pseudo-provider model", async () => {
+    responses.push(json({ data: sessionInfo }))
+    const created = await opencodeClient.createSession(
+      { model: { providerID: "claude-code", id: "opus" } },
+      "/repo/app",
+    )
+    const request = requests[0]
+    expect(request.method).toBe("POST")
+    expect(request.url.pathname).toBe("/api/session")
+    expect(request.headers.get("x-openchamber-backend")).toBe("claude")
+    expect(request.body).toMatchObject({ model: { providerID: "claude-code", id: "opus" } })
+    expect(created.id).toBe("ses_1")
+  })
+
+  test("the header rides the Claude create alone, never another request", async () => {
+    responses.push(json({ data: sessionInfo }))
+    await opencodeClient.createSession({ model: { providerID: "claude-code", id: "haiku" } }, "/repo/app")
+    responses.push(json({ data: [sessionInfo], cursor: {} }))
+    await opencodeClient.listSessionsPage({ directory: "/repo/app" })
+    responses.push(json({ data: sessionInfo }))
+    await opencodeClient.createSession({ model: { providerID: "openai", id: "gpt-5" } }, "/repo/app")
+
+    expect(requests).toHaveLength(3)
+    expect(requests[0].headers.get("x-openchamber-backend")).toBe("claude")
+    expect(requests[1].headers.has("x-openchamber-backend")).toBe(false)
+    expect(requests[2].headers.has("x-openchamber-backend")).toBe(false)
+  })
+})
+
 describe("error normalisation", () => {
   test("an invalid project config keeps its path and message reachable", async () => {
     const body = {

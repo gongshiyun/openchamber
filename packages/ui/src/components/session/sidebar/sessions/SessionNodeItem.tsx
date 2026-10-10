@@ -45,6 +45,8 @@ import { useSessionRowMenuState } from './useSessionRowMenuState';
 import type { SessionNode } from '../types';
 import type { SessionSidebarRenderContext } from '../sessionSidebarRowModel';
 import { SessionTimelineRowBody } from './SessionTimelineRowBody';
+import { ClaudeBackendBadge } from './ClaudeBackendBadge';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from '../utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useOpenOnBoard } from '@/components/sourceBoard/openOnBoard';
@@ -1598,8 +1600,10 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   ) : null);
   // Timeline rows carry the done hint in their first line instead.
   const badgeDoneHint = !isTimelineRow && showDoneHint;
-  const rowBadges = (pendingPermissionCount > 0 || pendingFormCount > 0 || badgeDoneHint) ? (
+  const sessionIsClaude = isClaudeBackendSession(resolvedSession);
+  const rowBadges = (sessionIsClaude || pendingPermissionCount > 0 || pendingFormCount > 0 || badgeDoneHint) ? (
     <>
+      {sessionIsClaude ? <ClaudeBackendBadge session={resolvedSession} /> : null}
       {badgeDoneHint ? doneHintBadge() : null}
       {pendingPermissionCount > 0 ? (
         <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
@@ -1899,6 +1903,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                           </span>
                         </div>
                       ) : null}
+                      {sessionIsClaude ? <ClaudeBackendBadge session={resolvedSession} className={badgeVisibilityClass} /> : null}
                       {pendingPermissionCount > 0 ? (
                         <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
                           <Icon name="shield" className="h-3 w-3" />

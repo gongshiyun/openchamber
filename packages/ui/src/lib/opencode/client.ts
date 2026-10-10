@@ -38,6 +38,7 @@ import { markStartupTrace } from "@/lib/startupTrace"
 import { assertProviderCircuitClosed, recordProviderError, recordProviderSuccess } from "./provider-tracker"
 import { normalizePath } from "@/lib/pathNormalization"
 import { isAutoModel } from "@/lib/routing/autoModel"
+import { CLAUDE_BACKEND, CLAUDE_PROVIDER_ID, OPENCHAMBER_BACKEND_HEADER } from "@/lib/sessionBackend"
 import { activeSessionSnapshotSchema, hostSessionStatusSnapshotSchema, type HostSessionStatusSnapshot } from "./session-status"
 import {
   compact,
@@ -883,6 +884,13 @@ class OpencodeService {
     directory?: string | null,
   ): Promise<Session> {
     const requestDirectory = this.resolveDirectory(directory)
+    // A Claude session is selected by its model (`claude-code/<alias>`), and
+    // the server routes the create to that backend by this header alone. The
+    // header rides the SDK's per-request options, so it cannot leak onto any
+    // other request.
+    const backendHeaders = params?.model?.providerID === CLAUDE_PROVIDER_ID
+      ? { [OPENCHAMBER_BACKEND_HEADER]: CLAUDE_BACKEND }
+      : undefined
     const info = await call("session.create", () =>
       this.clientFor(directory).session.create({
         id: params?.id,
@@ -894,7 +902,7 @@ class OpencodeService {
         model: params?.model && isAutoModel(params.model.providerID, params.model.id) ? undefined : params?.model,
         location: requestDirectory ? { directory: requestDirectory } : undefined,
         metadata: params?.metadata,
-      }),
+      }, backendHeaders ? { headers: backendHeaders } : undefined),
     )
     return projectSession(info)
   }

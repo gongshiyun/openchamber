@@ -35,6 +35,7 @@ import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
 import { normalizePath } from "@/lib/pathNormalization"
 import { CHAT_DRAFT_PROJECT_ID, createChatDirectory, deleteChatDirectory, getChatsRootFromDirectory, isChatDirectoryPath, warmChatsRootDirectory } from "@/lib/chatDirectories"
+import { CLAUDE_PROVIDER_ID, type ClaudeModelAlias } from "@/lib/sessionBackend"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { composeForkSessionMessage } from "@/lib/messages/executionMeta"
 import { findLatestUserModelChoice } from "@/lib/messages/userModelChoice"
@@ -401,6 +402,11 @@ export type NewSessionDraftState = {
   directoryOverride: string | null
   /** Chosen with the composer's shield button; absent means the new session takes the default from Settings. */
   permissionMode?: PermissionMode
+  /**
+   * Set while the new session should be created on the Claude Code backend;
+   * absent means OpenCode. The alias is the model the session starts on.
+   */
+  claudeBackend?: { model: ClaudeModelAlias }
   pendingWorktreeRequestId?: string | null
   bootstrapPendingDirectory?: string | null
   preserveDirectoryOverride?: boolean
@@ -453,6 +459,8 @@ export type SessionUIState = {
   setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
   setDraftPreserveDirectoryOverride: (value: boolean) => void
   setDraftPermissionMode: (mode: PermissionMode) => void
+  /** Picks the new session's backend; `null` returns the draft to OpenCode. */
+  setDraftClaudeBackend: (selection: { model: ClaudeModelAlias } | null) => void
   setDraftProjectContextPin: (kind: "note" | "plan", id: string, pinned: boolean) => void
   acknowledgeSessionAbort: (sessionId: string) => void
   clearAbortPrompt: () => void
@@ -812,6 +820,8 @@ const writeRuntimeSessionMemory = (key: string, patch: Partial<RuntimeSessionMem
 type MaterializedDraftSession = {
   sessionId: string
   directory: string | null
+  /** The model the session was created on; the first prompt runs on it too. */
+  model: { providerID: string; modelID: string; variant?: string }
   agent?: string
   syntheticParts?: SyntheticContextPart[]
 }
@@ -1010,6 +1020,14 @@ export async function materializeOpenDraftSession(selection: {
   const trimmedAgent = typeof selection.agent === "string" && selection.agent.trim().length > 0
     ? selection.agent.trim()
     : undefined
+  // A Claude draft ignores the OpenCode selection: its backend decides the
+  // provider and the picked alias is the model. OpenCode drafts are created on
+  // the composer's selection, as before.
+  const claudeBackend = draft.claudeBackend
+  const draftModel = claudeBackend
+    ? { providerID: CLAUDE_PROVIDER_ID, modelID: claudeBackend.model, variant: undefined }
+    : { providerID: selection.providerID, modelID: selection.modelID, variant: selection.variant }
+  const draftAgent = claudeBackend ? undefined : trimmedAgent
   let draftDirectoryOverride = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
   const draftProjectId = draft.selectedProjectId ?? null
 
@@ -1050,8 +1068,8 @@ export async function materializeOpenDraftSession(selection: {
       : undefined,
     "submitted-draft",
     {
-      model: { providerID: selection.providerID, id: selection.modelID, variant: selection.variant },
-      agent: trimmedAgent,
+      model: { providerID: draftModel.providerID, id: draftModel.modelID, variant: draftModel.variant },
+      agent: draftAgent,
     },
   )
   if (!created?.id) {
@@ -1079,15 +1097,17 @@ export async function materializeOpenDraftSession(selection: {
     console.warn("Failed to activate directory after creating session:", error)
   })
 
-  const effectiveDraftAgent = trimmedAgent ?? configState.currentAgentName
-  const variantOverride = resolveVariantToRecord(
-    effectiveDraftAgent,
-    selection.providerID,
-    selection.modelID,
-    selection.variant,
-  )
+  const effectiveDraftAgent = claudeBackend ? undefined : trimmedAgent ?? configState.currentAgentName
+  const variantOverride = claudeBackend
+    ? undefined
+    : resolveVariantToRecord(
+      effectiveDraftAgent,
+      draftModel.providerID,
+      draftModel.modelID,
+      draftModel.variant,
+    )
 
-  useSelectionStore.getState().saveSessionModelSelection(created.id, selection.providerID, selection.modelID)
+  useSelectionStore.getState().saveSessionModelSelection(created.id, draftModel.providerID, draftModel.modelID)
 
   if (effectiveDraftAgent) {
     useSelectionStore.getState().saveSessionAgentSelection(created.id, effectiveDraftAgent)
@@ -1111,6 +1131,7 @@ export async function materializeOpenDraftSession(selection: {
   return {
     sessionId: created.id,
     directory: createdDirectory,
+    model: draftModel,
     agent: effectiveDraftAgent,
     syntheticParts: draftSyntheticParts,
   }
@@ -1550,6 +1571,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       && currentDraft.syntheticParts === undefined
       && currentDraft.targetFolderId === undefined
       && currentDraft.permissionMode === undefined
+      && currentDraft.claudeBackend === undefined
     ) {
       return
     }
@@ -1568,6 +1590,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       initialPrompt: undefined,
       syntheticParts: undefined,
       targetFolderId: undefined,
+      claudeBackend: undefined,
     }
     set({
       newSessionDraft: nextDraft,
@@ -1621,6 +1644,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     set((s) => {
       if (!s.newSessionDraft?.open) return s
       return { newSessionDraft: { ...s.newSessionDraft, permissionMode: mode } }
+    }),
+
+  setDraftClaudeBackend: (selection) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      return { newSessionDraft: { ...s.newSessionDraft, claudeBackend: selection ?? undefined } }
     }),
 
   setDraftProjectContextPin: (kind, id, pinned) =>
@@ -1858,11 +1887,14 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
           sessionId: createdDraftSession.sessionId,
           directory: createdDraftSession.directory,
           content,
-          providerID,
-          modelID,
+          // The created session decides what its first turn runs on: a Claude
+          // draft was created on the Claude model, not the composer's OpenCode
+          // pick, and the prompt must not switch it back.
+          providerID: createdDraftSession.model.providerID,
+          modelID: createdDraftSession.model.modelID,
           agent: createdDraftSession.agent,
           agentMentionName,
-          variant,
+          variant: createdDraftSession.model.variant,
           inputMode,
           files,
           appendSubmissions,
