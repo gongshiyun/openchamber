@@ -344,9 +344,24 @@ export const createTranslator = ({
     return events;
   };
 
+  // Settles the turn as failed from outside the SDK stream: a transport
+  // failure or a generator throw the runner observes. Mirrors translateResult's
+  // error path without cost and tokens, which no result message carries here.
+  const fail = ({ error }) => {
+    if (turnSettled) return [];
+    const events = [];
+    if (stepOpen) {
+      stepOpen = false;
+      events.push(wire('session.step.failed', { assistantMessageID, error }));
+    }
+    turnSettled = true;
+    events.push(wire('session.execution.failed', { error }));
+    return events;
+  };
+
   const setModel = (modelId) => {
     if (typeof modelId === 'string' && modelId.length > 0) model = modelId;
   };
 
-  return { setModel, beginTurn, translate, abort };
+  return { setModel, beginTurn, translate, abort, fail };
 };

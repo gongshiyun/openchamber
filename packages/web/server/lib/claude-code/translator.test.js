@@ -445,6 +445,45 @@ describe('abort', () => {
   });
 });
 
+describe('fail', () => {
+  test('fails the open step and the execution with the given error', () => {
+    const translator = createTestTranslator();
+    translator.beginTurn();
+    const started = translator.translate(blockStart(0, { type: 'text' }));
+    const assistantMessageID = assistantMessageIDOf(started);
+
+    const events = translator.fail({ error: { type: 'error', message: 'transport closed' } });
+
+    expect(events.map((event) => event.type)).toEqual(['session.step.failed', 'session.execution.failed']);
+    expect(events[0].data).toEqual({
+      sessionID: SESSION_ID,
+      assistantMessageID,
+      error: { type: 'error', message: 'transport closed' },
+    });
+    expect(events[1].data).toEqual({
+      sessionID: SESSION_ID,
+      error: { type: 'error', message: 'transport closed' },
+    });
+
+    // The turn is closed: a late result or delta must not settle it again.
+    expect(translator.translate(successResult())).toEqual([]);
+    expect(translator.translate(blockDelta(0, { type: 'text_delta', text: 'late' }))).toEqual([]);
+  });
+
+  test('fails the execution without a step when no content arrived', () => {
+    const translator = createTestTranslator();
+    translator.beginTurn();
+
+    const events = translator.fail({ error: { type: 'error', message: 'spawn failed' } });
+
+    expect(events.map((event) => event.type)).toEqual(['session.execution.failed']);
+    expect(events[0].data).toEqual({
+      sessionID: SESSION_ID,
+      error: { type: 'error', message: 'spawn failed' },
+    });
+  });
+});
+
 describe('unknown and malformed SDK messages', () => {
   test('system init, assistant echoes and unknown types map to nothing', () => {
     const translator = createTestTranslator();
