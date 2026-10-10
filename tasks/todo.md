@@ -23,8 +23,13 @@
 - [x] T9 UI（后端选择器 + 请求头通道 + 徽标）— 已提交 ad7497d（含 13 locale；SDK 原生 per-request headers 方案）
 - [x] T9b 已开会话的 Claude 模型控件与发送路径 — 已提交 3423a00（resolveSendSelection 对 Claude 返回空选择；会话级 Claude 模型控件）
 - [x] T10 依赖与锁文件 — 已提交 15a9cd5（SDK 0.3.296；锁文件按上游约定归一化；frozen-lockfile 通过；真实 SDK 冒烟通过）
-- [x] T12 服务端验收 — 全链路 PASS（创建/流式/权限审批/工具执行/列表/消息/元数据）；UI 浏览器验证选择器与模型控件；全量门禁运行中
-- [~] T11 模块文档与 owning 文档 — 实现代理运行中
+- [x] T11 模块文档与 owning 文档 — 已提交 c3946cc（4 份：claude-code 主文档 + event-stream/opencode/openchamber-sessions）
+- [x] T12 Windows Desktop 集成验收 + 全量门禁 — 服务端全链路 PASS、UI 浏览器验证通过、`check:changed --base 7bd52e1` 全绿（anti-slop 修复提交 44fe458）
+
+## 完成记录（2026-10-11）
+- 全部 12 个任务完成；提交链见 `git log --oneline 7bd52e1..HEAD`（13 个功能/修复提交 + 基线）。
+- 验证：各模块聚焦测试（129 个 claude-code 测试）；真实 SDK 单回合冒烟（认证 + 流形状 + 翻译器）；服务端 E2E（创建/流式/权限审批 once/工具写文件/列表/消息/元数据）；UI 浏览器（后端选择器、Claude 模型控件、OpenCode 控件隐藏）。
+- 已知事项：`buildClaudeLaunchSpec` 无生产调用方（文档已注明）；`settings-helpers` 打包测试与 `lib/opencode` 部分用例为 Windows 环境既有失败；移动端 composer 不在 v1。
 
 ## 记录
 - 2026-10-11 计划评审结束；设计文档经终审修订（f0a8d53）。
