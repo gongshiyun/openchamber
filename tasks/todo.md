@@ -7,18 +7,18 @@
 - [x] 源码就位（上游 main 快照，基线提交 7bd52e1）
 - [x] git 初始化 + 特性分支
 - [x] bun 升级到 1.4.3（≥1.4.2）
-- [ ] `bun install` 完成 + 聚焦测试可跑
+- [x] `bun install` 完成（1533 包，锁定文件保持上游格式）+ 聚焦测试可跑（T1/T2 已实测通过）
 - Node 24.14：命令级 PATH 前置 `D:\software\nodejs`
 
 ## 任务
-- [ ] T1 ids.js（`ses_`/`msg_` id 生成）
-- [ ] T2 cli-resolution.js（claude CLI 定位与启动规格）
-- [ ] T3 translator.js（SDK → wire 事件）+ 形状契约测试
-- [ ] T4 transcript.js（JSONL 消息记录与分页）
-- [ ] T5 runner.js（SDK 会话进程 + 权限回调）
-- [ ] T6 routes.js（HTTP 子集）
-- [ ] T7 模块入口 + 服务端接线 + /api/event 多路复用
-- [ ] T8 claudeBinary 设置项（registry + 快照）
+- [x] T1 ids.js（`ses_`/`msg_` id 生成）— 已提交 06529cb
+- [x] T2 cli-resolution.js（claude CLI 定位与启动规格）— 已提交 3ca1a80
+- [~] T3 translator.js — 实现代理运行中
+- [~] T4 transcript.js — 实现代理运行中
+- [~] T6 routes.js（HTTP 子集）— 实现代理运行中
+- [ ] T5 runner.js（SDK 会话进程 + 权限回调）— 待 T3/T4 合入
+- [ ] T7 模块入口 + 服务端接线 + /api/event 多路复用 — 待 T5/T6 合入
+- [~] T8 claudeBinary 设置项 — 实现代理运行中
 - [ ] T9 UI（后端选择器 + 请求头通道 + 徽标）
 - [ ] T10 依赖与锁文件（@anthropic-ai/claude-agent-sdk）
 - [ ] T11 模块文档与 owning 文档
