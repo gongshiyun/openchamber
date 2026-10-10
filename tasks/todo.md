@@ -16,7 +16,8 @@
 - [x] T3 translator.js — 已提交 d0e3c10（25 测试通过，含跨包形状契约测试）
 - [~] T4 transcript.js — 实现代理运行中
 - [x] T6 routes.js（HTTP 子集）— 已提交 bc05c64（24 测试，含真实 @opencode/client 端到端集成）
-- [ ] T5 runner.js（SDK 会话进程 + 权限回调）— 待 T4 合入；SDK 0.3.296 真实形状已离线核验（stream_event/tool_result/result/canUseTool/PermissionResult/Options 全部确认）
+- [x] T4 transcript.js — 已提交 90e1d14（16 测试 + 真实翻译器链路验证；纠正 wire 形状为 type 而非 role）
+- [~] T5 runner.js（SDK 会话进程 + 权限回调）— 实现代理运行中（SDK 形状已核验：canUseTool/PermissionResult/Options/Permission.Request wire）
 - [ ] T7 模块入口 + 服务端接线 + /api/event 多路复用 — 待 T5/T6 合入
 - [~] T8 claudeBinary 设置项 — 已提交 d344fa6（19 文件：registry、双快照、settings-helpers 闸门、13 locale）
 - [~] T9 UI（后端选择器 + 请求头通道 + 徽标）— 实现代理运行中
