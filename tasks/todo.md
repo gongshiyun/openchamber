@@ -22,9 +22,9 @@
 - [x] T8 claudeBinary 设置项 — 已提交 d344fa6（19 文件：registry、双快照、settings-helpers 闸门、13 locale）
 - [x] T9 UI（后端选择器 + 请求头通道 + 徽标）— 已提交 ad7497d（含 13 locale；SDK 原生 per-request headers 方案）
 - [x] T9b 已开会话的 Claude 模型控件与发送路径 — 已提交 3423a00（resolveSendSelection 对 Claude 返回空选择；会话级 Claude 模型控件）
-- [ ] T10 依赖与锁文件（@anthropic-ai/claude-agent-sdk）
-- [ ] T11 模块文档与 owning 文档
-- [ ] T12 Windows Desktop 集成验收 + 全量门禁
+- [x] T10 依赖与锁文件 — 已提交 15a9cd5（SDK 0.3.296；锁文件按上游约定归一化；frozen-lockfile 通过；真实 SDK 冒烟通过）
+- [x] T12 服务端验收 — 全链路 PASS（创建/流式/权限审批/工具执行/列表/消息/元数据）；UI 浏览器验证选择器与模型控件；全量门禁运行中
+- [~] T11 模块文档与 owning 文档 — 实现代理运行中
 
 ## 记录
 - 2026-10-11 计划评审结束；设计文档经终审修订（f0a8d53）。
