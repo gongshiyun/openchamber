@@ -20,7 +20,8 @@
 - [~] T5 runner.js（SDK 会话进程 + 权限回调）— 实现代理运行中（SDK 形状已核验：canUseTool/PermissionResult/Options/Permission.Request wire）
 - [ ] T7 模块入口 + 服务端接线 + /api/event 多路复用 — 待 T5/T6 合入
 - [~] T8 claudeBinary 设置项 — 已提交 d344fa6（19 文件：registry、双快照、settings-helpers 闸门、13 locale）
-- [~] T9 UI（后端选择器 + 请求头通道 + 徽标）— 实现代理运行中
+- [x] T9 UI（后端选择器 + 请求头通道 + 徽标）— 已提交 ad7497d（含 13 locale；SDK 原生 per-request headers 方案）
+- [~] T9b 已开会话的 Claude 模型控件与发送路径 — 续作代理运行中（关闭 T9 的 medium-risk 项）
 - [ ] T9 UI（后端选择器 + 请求头通道 + 徽标）
 - [ ] T10 依赖与锁文件（@anthropic-ai/claude-agent-sdk）
 - [ ] T11 模块文档与 owning 文档
