@@ -1,0 +1,85 @@
+---
+title: Integrationen
+description: Verbinde die Dienste und Abonnements, mit denen OpenChamber arbeitet.
+---
+
+# Integrationen
+
+Unter **Einstellungen → Integrationen** meldest du dich bei den Diensten an, mit denen OpenChamber arbeitet. Die Anmeldung wird auf dem OpenChamber-Server gespeichert, sodass Web, Desktop und ein gekoppeltes Telefon sie teilen.
+
+## GitHub
+
+Klappe die Karte **GitHub** auf und wähle **Connect GitHub**, um dich mit einem kurzen Gerätecode anzumelden. Danach kann OpenChamber Sessions aus Issues und Pull Requests starten, sie an Nachrichten hängen und PRs öffnen oder aktualisieren. Alles, was GitHub kann, steht unter [GitHub Issues & PRs](/de/github/).
+
+## Linear
+
+### Workspace verbinden
+
+1. Klappe die Karte **Linear** auf und wähle **Connect**.
+2. Bestätige den Zugriff im Browser-Tab, der sich öffnet. Bis dahin zeigt die Karte **Waiting for Linear**.
+
+Eine weitere Linear-Organisation verbindest du mit **Add workspace**. Es ist immer genau ein Workspace aktuell: Wechsle mit **Switch to**, und **Disconnect** entfernt nur den aktuellen. Deine Projektzuordnung bleibt erhalten.
+
+### Issues durchsuchen
+
+Linear-Issues findest du auf dem Board **Issues and PRs**. Öffne es über das Pull-Request-Symbol im Kopf der Seitenleiste oder drücke <kbd>⌘K</kbd> und dann <kbd>B</kbd> (<kbd>Ctrl+K</kbd> und dann <kbd>B</kbd> unter Windows und Linux), und wähle oben **Linear**. Das Board listet die Issues des aktuellen Workspace und erlaubt dir:
+
+- ein Team oder **All teams** anzuzeigen
+- den aktuellen Workspace zu wechseln, wenn mehrere verbunden sind
+- gleichzeitig nach Status, Zugehörigkeit (**Assigned to me** oder **Created by me**) und Priorität zu filtern und nach Titel oder Kennung zu suchen
+- Beschreibung, Kommentare, Labels und Priorität eines Issues neben der Liste zu lesen
+- seinen **Status** zu ändern
+
+### Session aus einem Issue starten
+
+- Wähle auf dem Board ein Issue und dann **Start in worktree…** für einen frischen Branch oder **New session**, um im Projekt so zu arbeiten, wie es ist.
+- Wähle im Dialog **New Worktree** ein Linear-Issue.
+
+In beiden Fällen öffnet sich die Session mit dem Issue im Nachrichtenfeld angehängt, und die erste Nachricht schreibst du selbst. Das Board startet sie im Projekt, das dem Team des Issues zugeordnet ist; es steht neben **Start in**, und dort kannst du bei Bedarf ein anderes Projekt wählen. Teams ordnest du in der Linear-Karte zu: **Default project** gilt für alle Teams, **Team projects** überschreibt es pro Team. Ohne Zuordnung nimmt das Board das Projekt, das es zuletzt angezeigt hat.
+
+### Issue an eine Nachricht hängen
+
+Öffne im Chat-Composer das Menü **+** und wähle **Linear**. Das Issue geht als Kontext mit deiner nächsten Nachricht mit, und das Arbeitsstatus-Panel der Session behält einen Link darauf.
+
+### Session-Kommentare
+
+Schalte **Session comments** in der Linear-Karte ein, und eine Session, die aus einem Issue gestartet wurde oder deren erste Nachricht das Issue angehängt hat, schreibt beim Start, beim Abschluss oder bei einem Fehler einen Kommentar auf das Issue, jeweils mit einem Link, der die Session öffnet. Kommentare werden nur gepostet, wenn dieser OpenChamber-Server eine öffentliche Adresse hat, damit der Link für alle am Issue funktioniert; bei einer lokalen oder privaten Adresse wird nichts gepostet.
+
+## Integration installieren
+
+1. Öffne **Settings → Integrations**.
+2. Suche die Integration und wähle **Install**.
+3. Starte OpenCode neu, wenn darum gebeten wird — der Provider erscheint nach dem Neustart.
+4. Wähle **Set up** und melde dich an. Die Modelle erscheinen danach in der Modellauswahl im Chat.
+
+Integrationen werden für deinen Benutzer installiert und funktionieren damit in jedem Projekt. Aktualisieren oder entfernen kannst du sie jederzeit über dieselbe Karte.
+
+## Claude Code
+
+Claude Code nutzt deinen Claude Pro- oder Max-Plan über die Claude Code CLI auf deinem Rechner — ohne API-Keys.
+
+1. Installiere die Integration (siehe oben).
+2. Wähle **Set up** und melde dich an. Wenn du die Claude Code CLI noch nicht hast, bietet die Einrichtung an, sie zuerst zu installieren, und meldet dich danach an.
+
+**Wie dein Claude-Konto geschützt bleibt:** Diese Integration nutzt das offizielle Claude Agent SDK von Anthropic und deine installierte Claude Code CLI. Sie kapert kein OAuth, extrahiert oder wiederholt keine Browser-Tokens, gibt sich nicht als nicht unterstützter Client aus und umgeht nicht Anthropics Authentifizierung. Sie bleibt auf dem von Anthropic unterstützten Zugriffsweg und trägt daher nicht das mit Token-Hijacking oder unautorisierten Authentifizierungsumgehungen verbundene Sperrrisiko.
+
+## Aktualisieren oder entfernen
+
+- **Update** installiert die neueste veröffentlichte Version des Plugins.
+- **Remove** löscht das Plugin aus deiner OpenCode-Konfiguration. Der Provider wird beim nächsten Neuladen von OpenCode nicht mehr geladen.
+
+Wenn eine Karte meldet, dass Einträge manuell verwaltet werden müssen, wähle **Manage plugins** und bereinige die Duplikate dort.
+
+## Excalidraw
+
+Mit Excalidraw zeichnest du in `.excalidraw`-Dateien und Obsidian-Zeichnungen im Format `.excalidraw.md` direkt in Files. Es ist eine OpenChamber-Erweiterung und steht auf derselben Seite unter **OpenChamber extensions**.
+
+1. Öffne **Settings → Integrations** und wähle **Install** auf der Excalidraw-Karte. Du kannst auch eine Zeichnung in Files öffnen und im Hinweis darüber **Install** wählen.
+2. Öffne die Zeichnung erneut. Die Zeichenfläche ersetzt den Text der Datei, und Cmd/Ctrl+S, automatisches Speichern, der Umschalter zur Quellansicht und der Vollbildmodus funktionieren wie bei jeder anderen Datei.
+
+Über die Karte aktualisierst du die Erweiterung, sobald eine neue Version erscheint, schaltest sie wieder ein, wenn du sie pausiert hast, und entfernst sie. Deine Zeichnungen bleiben beim Entfernen unverändert; sie öffnen sich dann einfach als Text. Nur Web und Desktop.
+
+## Verwandtes
+
+- [GitHub Issues & PRs](/de/github/) — alles, was GitHub in OpenChamber kann
+- [Worktree-Sessions](/de/worktrees/) — wo Issue-Sessions starten können
