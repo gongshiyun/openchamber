@@ -67,6 +67,14 @@ This module contains the OpenChamber message-stream WebSocket protocol and runti
 - The reusable upstream reader centralizes SSE fetch/parsing/reconnect behavior for the WS runtime and OpenCode watcher. Additional event consumers should move to it only with parity tests for their lifecycle and error semantics.
 - Browser transport concerns live in the WS bridge modules; server-side global stream ownership lives in `global-hub.js`.
 
+## Injected event sources
+Two server-side producers enter events into the hub with `injectEvent({ payload, directory, spaceId })`, as if they had arrived from upstream: the event is numbered, coalesced, retained for replay, and fanned out with the host's, so a client keeps one cursor for everything.
+
+- **Isolated spaces** (`spaceId` set; `../spaces/DOCUMENTATION.md`): delivered only to subscribers that asked for space events, `subscribeEvent(fn, { spaces: true })`.
+- **Claude Code sessions** (`spaceId: null`; `../claude-code/DOCUMENTATION.md`): OpenCode v2 wire shapes produced by the Claude backend, injected with the event's own directory. They are delivered to every event subscriber, exactly like OpenCode's own events, so the global WS bridge and the SSE proxy carry them and server-side consumers translate them through the same `translateWireEvent` — live status for a Claude session comes from its `session.execution.*` events the same way as for an OpenCode one.
+
+An injected event carries its own wire event id in the payload; the hub's replay cursor (`oc-...`) is assigned on entry and is what a reconnecting client's `Last-Event-ID` names. `subscribeEvent` without `spaces: true` sees host events and Claude events; a space event is never delivered to a subscriber that did not ask for spaces. The SSE proxy writes Claude frames as their own `data:` blocks between the upstream's blocks, filtered by session id, for every `/api/event` stream (see `../opencode/DOCUMENTATION.md`).
+
 ## Delta coalescing
 OpenCode publishes one `message.part.delta` per token fragment. A 5.7 KB answer measured 3,402 delta events of 1.7 characters each, 97% of all frames and 1.3 MB on the wire. The hub merges them before replay and fan-out, which cut that stream to 483 frames and 197 KB with identical text. Replay holds merged frames too, so its 2,048 entries cover about seven times more streaming time.
 

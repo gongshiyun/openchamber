@@ -919,6 +919,14 @@ within a ten-minute overall deadline.
   - OpenCode readiness gate for proxied `/api` requests
   - Worktree checkout gate before directory-scoped upstream reads and writes
 
+Claude Code carve-outs (only when the server wires the Claude backend: `claudeRoutes`, `mergeClaudeSessionList`, `claudeEventHub`, `isClaudeSession`; all four absent means this server serves OpenCode alone, exactly as before):
+
+- The Claude route subset (`../claude-code/routes.js`) is mounted at `/api` **before** the readiness gate and the worktree gate: a Claude request must never wait on an OpenCode start, restart, or worktree checkout it does not touch. The common middleware leaves `/api/session` bodies unparsed for the streaming proxy, so the proxy runs `express.json` first, but only for requests the Claude backend owns — a `POST /api/session` carrying `x-openchamber-backend: claude`, or a `/api/session/:sessionID...` path whose session the Claude registry holds. Every other `/api` request keeps its raw-body path for OpenCode.
+- `GET /api/session` appends the Claude records of the first page after the host's (and any spaces'): a cursored read is never re-appended, and directory/search/limit scope the Claude records exactly as they scope the upstream's. A Claude listing failure leaves the host's payload untouched.
+- The SSE forwarder (`/api/event`, and `/api/global/event` as its alias) multiplexes Claude frames into the response: a frame whose session the Claude registry holds is written as its own `data:` block between the upstream's blocks, so a block of the host's is never cut. The subscription filters by session id only — Claude frames ride every stream, directory-scoped ones included, because a Claude session has no OpenCode upstream of its own. A frame of any other session is not written.
+
+`server/index.js` creates the Claude runtime and `server-utils-runtime.js` passes these four deps at proxy setup; the route subset, the wire-event contract, and the persistence live in `../claude-code/DOCUMENTATION.md`.
+
 Git bootstrap must reach `git-ready` before OpenCode can cache a new worktree's
 project identity or config. Setup scripts may still be running; the optional UI
 setup wait remains separate. Failed or timed-out checkout returns 503 without
