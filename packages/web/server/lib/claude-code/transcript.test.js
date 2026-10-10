@@ -123,7 +123,7 @@ describe('claude-code transcript records', () => {
     expect(record.info.type).toBe('user');
     expect(record.info.id).toBe('msg_user_1');
     expect(record.info.text).toBe('Hello Claude');
-    expect(typeof record.info.time.created).toBe('number');
+    expect(Number.isFinite(record.info.time.created)).toBe(true);
     expect(record.parts).toEqual([{ type: 'text', text: 'Hello Claude' }]);
   });
 
@@ -145,7 +145,7 @@ describe('claude-code transcript records', () => {
     expect(record.info.id).toBe('msg_assistant_1');
     expect(record.info.agent).toBe('claude');
     expect(record.info.model).toEqual(ASSISTANT_MODEL);
-    expect(typeof record.info.time.created).toBe('number');
+    expect(Number.isFinite(record.info.time.created)).toBe(true);
     expect(record.info.time.completed).toBe(ended.created);
     expect(record.info.finish).toBe('stop');
     expect(record.info.cost).toBe(0.01);
@@ -161,8 +161,8 @@ describe('claude-code transcript records', () => {
     expect(toolPart.state.status).toBe('completed');
     expect(toolPart.state.input).toEqual({ command: 'ls' });
     expect(toolPart.state.content).toEqual([{ type: 'text', text: 'a.txt' }]);
-    expect(typeof toolPart.time.created).toBe('number');
-    expect(typeof toolPart.time.completed).toBe('number');
+    expect(Number.isFinite(toolPart.time.created)).toBe(true);
+    expect(Number.isFinite(toolPart.time.completed)).toBe(true);
   });
 
   test('a failed tool and a failed step map to the error wire states', () => {

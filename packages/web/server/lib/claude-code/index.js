@@ -35,7 +35,7 @@ import path from 'node:path';
 
 import { mergeMetadataPatch } from '../openchamber-sessions/session-metadata-store.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
-import { isPlainObject } from '../shared/guards.js';
+import { isPlainObject, isString } from '../shared/guards.js';
 import { resolveClaudeCliPath } from './cli-resolution.js';
 import { createMessageId, createSessionId } from './ids.js';
 import { createClaudeRoutes } from './routes.js';
@@ -55,12 +55,10 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** A stored model selection: this backend's provider id plus the alias. */
 const modelRefOf = (model, fallbackId) => {
-  const id = typeof model?.id === 'string' && model.id !== '' ? model.id : fallbackId;
-  return {
-    providerID: PROVIDER_ID,
-    id,
-    ...(typeof model?.variant === 'string' && model.variant !== '' ? { variant: model.variant } : {}),
-  };
+  const id = isString(model?.id) && model.id !== '' ? model.id : fallbackId;
+  const ref = { providerID: PROVIDER_ID, id };
+  if (isString(model?.variant) && model.variant !== '') ref.variant = model.variant;
+  return ref;
 };
 
 /** The metadata every Claude session carries, whatever the caller sent. */
@@ -70,7 +68,7 @@ const withBackendMetadata = (metadata) => {
   return { ...base, openchamber: { ...openchamber, backend: BACKEND } };
 };
 
-const numberOr = (value, fallback) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
+const numberOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
 
 /**
  * Build the Claude Code runtime for one instance data directory.
@@ -108,17 +106,17 @@ export function createClaudeCodeRuntime({
   resolveCliPath,
   now = Date.now,
 }) {
-  if (typeof dataDir !== 'string' || dataDir === '') {
+  if (!isString(dataDir) || dataDir === '') {
     throw new TypeError('createClaudeCodeRuntime requires an instance data directory');
   }
-  if (typeof eventHub?.injectEvent !== 'function') {
+  if (!(eventHub?.injectEvent instanceof Function)) {
     throw new TypeError('createClaudeCodeRuntime requires an event hub with injectEvent');
   }
 
   const baseDir = path.join(dataDir, 'claude-code');
   const indexPath = path.join(baseDir, 'sessions.json');
   const sessionsDir = path.join(baseDir, 'sessions');
-  const runnerFactory = typeof createRunnerFactoryImpl === 'function'
+  const runnerFactory = createRunnerFactoryImpl instanceof Function
     ? createRunnerFactoryImpl()
     : createRunnerFactoryImpl;
   const resolveCli = resolveCliPath ?? (async () => resolveClaudeCliPath({ settings: await getSettings?.() }));
@@ -156,17 +154,20 @@ export function createClaudeCodeRuntime({
   // Persistence
   // -------------------------------------------------------------------------
 
-  const storedOf = (record) => ({
-    directory: record.directory,
-    projectID: record.projectID,
-    title: record.title,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    model: record.model,
-    claudeSessionUuid: record.claudeSessionUuid ?? null,
-    metadata: record.metadata,
-    ...(record.agent !== undefined ? { agent: record.agent } : {}),
-  });
+  const storedOf = (record) => {
+    const stored = {
+      directory: record.directory,
+      projectID: record.projectID,
+      title: record.title,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      model: record.model,
+      claudeSessionUuid: record.claudeSessionUuid ?? null,
+      metadata: record.metadata,
+    };
+    if (record.agent !== undefined) stored.agent = record.agent;
+    return stored;
+  };
 
   /**
    * Writes the index atomically: a temp file in the same directory, then a
@@ -200,19 +201,20 @@ export function createClaudeCodeRuntime({
    * poisoning every later read.
    */
   const recordFromStored = (sessionID, value) => {
-    const directory = typeof value.directory === 'string' ? value.directory : '';
-    return {
+    const directory = isString(value.directory) ? value.directory : '';
+    const record = {
       id: sessionID,
       directory,
       projectID: createProjectIdFromPath(directory),
-      title: typeof value.title === 'string' ? value.title : '',
+      title: isString(value.title) ? value.title : '',
       createdAt: numberOr(value.createdAt, 0),
       updatedAt: numberOr(value.updatedAt, 0),
       model: modelRefOf(value.model, DEFAULT_MODEL_ID),
-      claudeSessionUuid: typeof value.claudeSessionUuid === 'string' ? value.claudeSessionUuid : null,
+      claudeSessionUuid: isString(value.claudeSessionUuid) ? value.claudeSessionUuid : null,
       metadata: isPlainObject(value.metadata) ? value.metadata : {},
-      ...(typeof value.agent === 'string' && value.agent !== '' ? { agent: value.agent } : {}),
     };
+    if (isString(value.agent) && value.agent !== '') record.agent = value.agent;
+    return record;
   };
 
   /**
@@ -253,18 +255,21 @@ export function createClaudeCodeRuntime({
   // -------------------------------------------------------------------------
 
   /** The wire record the UI projects; `location.directory` is the load-bearing field. */
-  const wireRecord = (record) => ({
-    id: record.id,
-    projectID: record.projectID,
-    location: { directory: record.directory },
-    title: record.title,
-    ...(record.agent !== undefined ? { agent: record.agent } : {}),
-    model: { ...record.model },
-    cost: 0,
-    tokens: { ...ZERO_TOKENS, cache: { ...ZERO_TOKENS.cache } },
-    time: { created: record.createdAt, updated: record.updatedAt },
-    metadata: record.metadata,
-  });
+  const wireRecord = (record) => {
+    const wire = {
+      id: record.id,
+      projectID: record.projectID,
+      location: { directory: record.directory },
+      title: record.title,
+      model: { ...record.model },
+      cost: 0,
+      tokens: { ...ZERO_TOKENS, cache: { ...ZERO_TOKENS.cache } },
+      time: { created: record.createdAt, updated: record.updatedAt },
+      metadata: record.metadata,
+    };
+    if (record.agent !== undefined) wire.agent = record.agent;
+    return wire;
+  };
 
   const requireRecord = (sessionID) => {
     const record = records.get(sessionID);
@@ -281,37 +286,38 @@ export function createClaudeCodeRuntime({
 
   const createSession = async (input = {}) => {
     const sessionID = input.id === undefined || input.id === '' ? createSessionId() : input.id;
-    if (typeof sessionID !== 'string' || !SESSION_ID_PATTERN.test(sessionID)) {
+    if (!isString(sessionID) || !SESSION_ID_PATTERN.test(sessionID)) {
       throw new TypeError(`invalid Claude session id: ${String(sessionID)}`);
     }
     if (records.has(sessionID)) throw new Error(`Claude session ${sessionID} already exists`);
 
-    const directory = typeof input.directory === 'string' ? input.directory : '';
+    const directory = isString(input.directory) ? input.directory : '';
     const createdAt = now();
     const record = {
       id: sessionID,
       directory,
       projectID: createProjectIdFromPath(directory),
-      title: typeof input.title === 'string' ? input.title : '',
+      title: isString(input.title) ? input.title : '',
       createdAt,
       updatedAt: createdAt,
       model: modelRefOf(input.model, DEFAULT_MODEL_ID),
       claudeSessionUuid: null,
       metadata: withBackendMetadata(input.metadata),
-      ...(typeof input.agent === 'string' && input.agent !== '' ? { agent: input.agent } : {}),
     };
+    if (isString(input.agent) && input.agent !== '') record.agent = input.agent;
     records.set(sessionID, record);
     await persistIndex();
+    const created = {
+      sessionID,
+      projectID: record.projectID,
+      location: { directory },
+      title: record.title,
+      model: record.model,
+      metadata: record.metadata,
+    };
+    if (record.agent !== undefined) created.agent = record.agent;
     emitWire(
-      wireEvent('session.created', {
-        sessionID,
-        projectID: record.projectID,
-        location: { directory },
-        title: record.title,
-        ...(record.agent !== undefined ? { agent: record.agent } : {}),
-        model: record.model,
-        metadata: record.metadata,
-      }, directory),
+      wireEvent('session.created', created, directory),
       record,
     );
     return wireRecord(record);
@@ -319,7 +325,7 @@ export function createClaudeCodeRuntime({
 
   const renameSession = async (sessionID, title) => {
     const record = requireRecord(sessionID);
-    if (typeof title !== 'string') throw new TypeError('a title is required to rename a Claude session');
+    if (!isString(title)) throw new TypeError('a title is required to rename a Claude session');
     record.title = title;
     record.updatedAt = now();
     await persistIndex();
@@ -328,7 +334,7 @@ export function createClaudeCodeRuntime({
 
   const moveSession = async (sessionID, directory) => {
     const record = requireRecord(sessionID);
-    if (typeof directory !== 'string' || directory === '') {
+    if (!isString(directory) || directory === '') {
       throw new TypeError('a directory is required to move a Claude session');
     }
     record.directory = directory;
@@ -371,7 +377,7 @@ export function createClaudeCodeRuntime({
 
   const switchModel = async (sessionID, model) => {
     const record = requireRecord(sessionID);
-    if (typeof model?.id !== 'string' || model.id === '') {
+    if (!isString(model?.id) || model.id === '') {
       throw new TypeError('a model with an id is required to switch a Claude session');
     }
     const previous = { ...record.model };
@@ -391,7 +397,7 @@ export function createClaudeCodeRuntime({
 
   const switchAgent = async (sessionID, agent) => {
     const record = requireRecord(sessionID);
-    if (typeof agent !== 'string' || agent === '' || agent === record.agent) return;
+    if (!isString(agent) || agent === '' || agent === record.agent) return;
     const previous = record.agent;
     record.agent = agent;
     record.updatedAt = now();
@@ -405,8 +411,8 @@ export function createClaudeCodeRuntime({
    * filtered by a case-insensitive title substring and cut to `limit`.
    */
   const listSessionsForProxy = ({ directory, limit, search } = {}) => {
-    const scoped = typeof directory === 'string' && directory !== '';
-    const needle = typeof search === 'string' && search !== '' ? search.toLowerCase() : null;
+    const scoped = isString(directory) && directory !== '';
+    const needle = isString(search) && search !== '' ? search.toLowerCase() : null;
     const size = Number.isInteger(limit) && limit > 0 ? limit : null;
     const matching = [];
     for (const record of records.values()) {
@@ -524,7 +530,7 @@ export function createClaudeCodeRuntime({
   const sendPrompt = async (sessionID, input = {}) => {
     const record = requireRecord(sessionID);
     const runner = await runnerEntryFor(record).promise;
-    const messageID = typeof input.id === 'string' && input.id !== '' ? input.id : createMessageId();
+    const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
     // v1 carries the text and the client-minted message id only. Files, agent
     // mentions, skills, metadata and delivery reach this route but have no
     // runner path yet; they are dropped until a later task adds them.

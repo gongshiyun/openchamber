@@ -90,7 +90,7 @@ describe('beginTurn', () => {
       data: { sessionID: SESSION_ID },
       location: { directory: DIRECTORY },
     });
-    expect(typeof events[0].id).toBe('string');
+    expect(events[0].id).toBeTypeOf('string');
   });
 });
 

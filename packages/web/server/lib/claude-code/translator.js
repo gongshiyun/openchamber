@@ -41,6 +41,7 @@
 // authoritative for text, reasoning and tool input; full `assistant` echoes
 // are ignored to avoid duplicating content.
 
+import { asNonEmptyString, isString } from '../shared/guards.js';
 import { createMessageId } from './ids.js';
 
 const PROVIDER_ID = 'claude-code';
@@ -48,7 +49,8 @@ const PROVIDER_ID = 'claude-code';
 // with the session's alias (opus/sonnet/haiku/fable) before a turn starts.
 const DEFAULT_MODEL = 'default';
 
-const numberOrZero = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+// `Number.isFinite` rejects every non-number, so it carries the whole check.
+const numberOrZero = (value) => (Number.isFinite(value) ? value : 0);
 
 // SDK result usage -> TokenUsageInfo ({ input, output, reasoning, cache: { read, write } }).
 // `reasoning` stays 0: the SDK reports thinking tokens inside output_tokens.
@@ -66,10 +68,10 @@ const tokenUsage = (usage) => ({
 // A tool_result block's content as displayable text (string content, or the
 // text blocks of an array); used for error messages.
 const contentText = (content) => {
-  if (typeof content === 'string') return content;
+  if (isString(content)) return content;
   if (!Array.isArray(content)) return '';
   return content
-    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .filter((block) => block && block.type === 'text' && isString(block.text))
     .map((block) => block.text)
     .join('\n');
 };
@@ -81,11 +83,11 @@ const contentText = (content) => {
 // one empty text block.
 const toolContent = (content) => {
   const items = [];
-  if (typeof content === 'string' && content.length > 0) {
+  if (isString(content) && content.length > 0) {
     items.push({ type: 'text', text: content });
   } else if (Array.isArray(content)) {
     for (const block of content) {
-      if (block && block.type === 'text' && typeof block.text === 'string') {
+      if (block && block.type === 'text' && isString(block.text)) {
         items.push({ type: 'text', text: block.text });
       }
     }
@@ -97,10 +99,10 @@ const toolContent = (content) => {
 // human-readable note in `result` when it has one; otherwise the error
 // subtype (error_during_execution, error_max_turns, ...) names the failure.
 const resultError = (message) => {
-  const text = typeof message?.result === 'string' ? message.result.trim() : '';
-  if (text.length > 0) return { type: 'error', message: text };
+  const text = asNonEmptyString(message?.result);
+  if (text) return { type: 'error', message: text };
   const subtype =
-    typeof message?.subtype === 'string' && message.subtype !== 'success' ? message.subtype : null;
+    isString(message?.subtype) && message.subtype !== 'success' ? message.subtype : null;
   return {
     type: subtype ?? 'error',
     message: subtype ? `Claude Code run failed: ${subtype}` : 'Claude Code run failed',
@@ -154,7 +156,9 @@ export const createTranslator = ({
   const translateBlockStart = (event) => {
     const index = event?.index;
     const block = event?.content_block;
-    if (typeof index !== 'number' || !block || typeof block.type !== 'string') return [];
+    // A block with no string `type` matches none of the branches below, so the
+    // index and the block's presence are the only preconditions left.
+    if (!Number.isFinite(index) || !block) return [];
 
     if (block.type === 'text') {
       const events = ensureStep();
@@ -174,9 +178,9 @@ export const createTranslator = ({
       return events;
     }
 
-    if (block.type === 'tool_use' && typeof block.id === 'string') {
+    if (block.type === 'tool_use' && isString(block.id)) {
       const events = ensureStep();
-      const name = typeof block.name === 'string' ? block.name : '';
+      const name = isString(block.name) ? block.name : '';
       blocks.set(index, { kind: 'tool_use', id: block.id, name, json: '' });
       events.push(wire('session.tool.input.started', { assistantMessageID, id: block.id, name }));
       return events;
@@ -188,19 +192,21 @@ export const createTranslator = ({
   const translateBlockDelta = (event) => {
     const block = blocks.get(event?.index);
     const delta = event?.delta;
-    if (!block || !delta || typeof delta.type !== 'string') return [];
+    // The exact `delta.type` comparisons below reject a missing or non-string
+    // type on their own.
+    if (!block || !delta) return [];
 
-    if (delta.type === 'text_delta' && block.kind === 'text' && typeof delta.text === 'string') {
+    if (delta.type === 'text_delta' && block.kind === 'text' && isString(delta.text)) {
       block.text += delta.text;
       return [wire('session.text.delta', { assistantMessageID, ordinal: block.ordinal, delta: delta.text })];
     }
 
-    if (delta.type === 'thinking_delta' && block.kind === 'reasoning' && typeof delta.thinking === 'string') {
+    if (delta.type === 'thinking_delta' && block.kind === 'reasoning' && isString(delta.thinking)) {
       block.text += delta.thinking;
       return [wire('session.reasoning.delta', { assistantMessageID, ordinal: block.ordinal, delta: delta.thinking })];
     }
 
-    if (delta.type === 'input_json_delta' && block.kind === 'tool_use' && typeof delta.partial_json === 'string') {
+    if (delta.type === 'input_json_delta' && block.kind === 'tool_use' && isString(delta.partial_json)) {
       block.json += delta.partial_json;
       return [wire('session.tool.input.delta', { assistantMessageID, id: block.id, delta: delta.partial_json })];
     }
@@ -225,7 +231,9 @@ export const createTranslator = ({
   const translateStreamEvent = (message) => {
     if (turnSettled) return [];
     const event = message?.event;
-    if (!event || typeof event.type !== 'string') return [];
+    // Only the three content-block event types below are translated; any other
+    // `type` (including a non-string one) takes the default branch.
+    if (!event) return [];
 
     switch (event.type) {
       case 'content_block_start':
@@ -249,7 +257,7 @@ export const createTranslator = ({
 
     const events = [];
     for (const block of content) {
-      if (!block || block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
+      if (!block || block.type !== 'tool_result' || !isString(block.tool_use_id)) continue;
       events.push(...ensureStep());
       const data = {
         assistantMessageID,
@@ -273,7 +281,7 @@ export const createTranslator = ({
 
   const translateResult = (message) => {
     if (turnSettled) return [];
-    const subtype = typeof message?.subtype === 'string' ? message.subtype : null;
+    const subtype = isString(message?.subtype) ? message.subtype : null;
     const isSuccess = subtype === 'success' && message?.is_error !== true;
     const isError = message?.is_error === true || (subtype !== null && subtype.startsWith('error'));
     if (!isSuccess && !isError) return [];
@@ -301,9 +309,8 @@ export const createTranslator = ({
   };
 
   const translate = (message) => {
-    if (!message || typeof message !== 'object') return [];
-
-    switch (message.type) {
+    // An absent, non-object, or unknown message matches no case below.
+    switch (message?.type) {
       case 'stream_event':
         return translateStreamEvent(message);
       case 'user':
@@ -360,7 +367,7 @@ export const createTranslator = ({
   };
 
   const setModel = (modelId) => {
-    if (typeof modelId === 'string' && modelId.length > 0) model = modelId;
+    if (isString(modelId) && modelId.length > 0) model = modelId;
   };
 
   return { setModel, beginTurn, translate, abort, fail };

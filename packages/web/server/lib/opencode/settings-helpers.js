@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
 import { isPermissionMode } from '../permission-auto-accept/modes.js';
 import { idleStopSchema } from '../spaces/idle-stop.js';
+import { isString } from '../shared/guards.js';
 
 // Generated from packages/ui/src/lib/settings/registry.ts by
 // `bun run settings-registry:generate`; `registry.test.ts` fails when stale.
@@ -260,7 +261,7 @@ export const createSettingsHelpers = (dependencies) => {
     // Absolute path to the claude CLI binary (optional override for the
     // Claude Code backend). Empty means "not set": the backend falls back to
     // CLAUDE_BINARY, PATH, then the known install locations.
-    if (typeof candidate.claudeBinary === 'string') {
+    if (isString(candidate.claudeBinary)) {
       const normalized = normalizeDirectoryPath(candidate.claudeBinary).trim();
       result.claudeBinary = normalized;
     }

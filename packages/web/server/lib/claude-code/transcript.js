@@ -54,6 +54,8 @@
 import fsPromisesDefault from 'node:fs/promises';
 import pathDefault from 'node:path';
 
+import { isPlainObject, isRecord, isString } from '../shared/guards.js';
+
 // Mirrors `partIds` in packages/ui/src/lib/opencode/model.ts: text and
 // reasoning items are addressed by (messageID, ordinal), tools by call id.
 const textPartId = (messageID, ordinal) => `${messageID}:text:${ordinal}`;
@@ -68,11 +70,14 @@ const DEFAULT_LIMIT = 50;
 
 const isFinalToolStatus = (status) => status === 'completed' || status === 'error';
 
-const modelFrom = (model) => ({
-  providerID: typeof model?.providerID === 'string' ? model.providerID : FALLBACK_MODEL.providerID,
-  id: typeof model?.id === 'string' ? model.id : FALLBACK_MODEL.id,
-  ...(typeof model?.variant === 'string' ? { variant: model.variant } : {}),
-});
+const modelFrom = (model) => {
+  const result = {
+    providerID: isString(model?.providerID) ? model.providerID : FALLBACK_MODEL.providerID,
+    id: isString(model?.id) ? model.id : FALLBACK_MODEL.id,
+  };
+  if (isString(model?.variant)) result.variant = model.variant;
+  return result;
+};
 
 /** Drops undefined fields so a persisted patch carries only what changed. */
 const compactPatch = (patch) => {
@@ -85,11 +90,11 @@ const compactPatch = (patch) => {
 
 /** The accumulated streaming JSON input of a tool part, parsed for the settled state. */
 const parseToolInput = (part) => {
-  const raw = typeof part?.state?.input === 'string' ? part.state.input : '';
+  const raw = isString(part?.state?.input) ? part.state.input : '';
   if (raw.length === 0) return {};
   try {
     const parsed = JSON.parse(raw);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    return isPlainObject(parsed) ? parsed : {};
   } catch {
     return {};
   }
@@ -185,10 +190,10 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
   };
 
   const applyCreate = (op) => {
-    if (typeof op.messageID !== 'string' || recordByID.has(op.messageID)) return;
+    if (!isString(op.messageID) || recordByID.has(op.messageID)) return;
     const created = Number.isFinite(op.created) ? op.created : Date.now();
     if (op.kind === 'user') {
-      const text = typeof op.text === 'string' ? op.text : '';
+      const text = isString(op.text) ? op.text : '';
       const info = { id: op.messageID, type: 'user', time: { created }, text };
       records.push({ info, parts: [{ type: 'text', text }] });
     } else {
@@ -196,10 +201,10 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
         id: op.messageID,
         type: 'assistant',
         time: { created },
-        ...(typeof op.agent === 'string' ? { agent: op.agent } : {}),
         model: modelFrom(op.model),
         content: [],
       };
+      if (isString(op.agent)) info.agent = op.agent;
       records.push({ info, parts: info.content });
     }
     recordByID.set(op.messageID, records[records.length - 1]);
@@ -231,12 +236,14 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
   const applyDelta = (op) => {
     const part = findPart(op.messageID, op.partID);
     if (!part) return;
-    if (op.field === 'text' && typeof part.text === 'string') part.text += op.delta;
-    if (op.field === 'input' && typeof part.state?.input === 'string') part.state.input += op.delta;
+    // `field` names the kind the delta belongs to: text/reasoning parts carry
+    // `text`, tool parts carry `state.input`, so the branch alone decides.
+    if (op.field === 'text') part.text += op.delta;
+    if (op.field === 'input') part.state.input += op.delta;
   };
 
   const applyOp = (op) => {
-    if (!op || typeof op !== 'object') return;
+    if (!isRecord(op)) return;
     switch (op.op) {
       case 'create':
         applyCreate(op);
@@ -260,17 +267,19 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
   // Wire events -> ops
   // -------------------------------------------------------------------------
 
-  const eventCreated = (event) =>
-    typeof event?.created === 'number' && Number.isFinite(event.created) ? event.created : Date.now();
+  const eventCreated = (event) => (Number.isFinite(event?.created) ? event.created : Date.now());
 
-  const assistantCreateOp = (messageID, created, data) => ({
-    kind: 'assistant',
-    op: 'create',
-    messageID,
-    created,
-    ...(typeof data?.agent === 'string' ? { agent: data.agent } : {}),
-    model: data?.model,
-  });
+  const assistantCreateOp = (messageID, created, data) => {
+    const op = {
+      kind: 'assistant',
+      op: 'create',
+      messageID,
+      created,
+      model: data?.model,
+    };
+    if (isString(data?.agent)) op.agent = data.agent;
+    return op;
+  };
 
   const partOp = (messageID, partID, part) => ({ kind: 'assistant', op: 'part', messageID, partID, part });
   const deltaOp = (messageID, partID, field, delta) => ({
@@ -290,18 +299,19 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
   const wireOps = (event) => {
     const type = event?.type;
     const data = event?.data ?? {};
-    if (typeof data.sessionID === 'string' && data.sessionID !== sessionID) return [];
+    // Every wire event names its session; anything else is not this one's.
+    if (data.sessionID !== sessionID) return [];
     const created = eventCreated(event);
     const messageID = data.assistantMessageID;
     const createIfMissing = () => (recordByID.has(messageID) ? [] : [assistantCreateOp(messageID, created, data)]);
 
     switch (type) {
       case 'session.step.started': {
-        if (typeof messageID !== 'string' || recordByID.has(messageID)) return [];
+        if (!isString(messageID) || recordByID.has(messageID)) return [];
         return [assistantCreateOp(messageID, created, data)];
       }
       case 'session.step.ended':
-        if (typeof messageID !== 'string') return [];
+        if (!isString(messageID)) return [];
         return [
           {
             kind: 'assistant',
@@ -316,7 +326,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
           },
         ];
       case 'session.step.failed':
-        if (typeof messageID !== 'string') return [];
+        if (!isString(messageID)) return [];
         return [
           {
             kind: 'assistant',
@@ -335,7 +345,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       case 'session.text.started':
       case 'session.reasoning.started': {
         const ordinal = data.ordinal;
-        if (typeof messageID !== 'string' || !Number.isInteger(ordinal) || ordinal < 0) return [];
+        if (!isString(messageID) || !Number.isInteger(ordinal) || ordinal < 0) return [];
         const reasoning = type === 'session.reasoning.started';
         const partID = reasoning ? reasoningPartId(messageID, ordinal) : textPartId(messageID, ordinal);
         const ops = createIfMissing();
@@ -354,7 +364,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       case 'session.text.delta':
       case 'session.reasoning.delta': {
         const ordinal = data.ordinal;
-        if (typeof messageID !== 'string' || !Number.isInteger(ordinal) || typeof data.delta !== 'string') return [];
+        if (!isString(messageID) || !Number.isInteger(ordinal) || !isString(data.delta)) return [];
         const reasoning = type === 'session.reasoning.delta';
         const partID = reasoning ? reasoningPartId(messageID, ordinal) : textPartId(messageID, ordinal);
         const ops = createIfMissing();
@@ -374,7 +384,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       case 'session.text.ended':
       case 'session.reasoning.ended': {
         const ordinal = data.ordinal;
-        if (typeof messageID !== 'string' || !Number.isInteger(ordinal) || typeof data.text !== 'string') return [];
+        if (!isString(messageID) || !Number.isInteger(ordinal) || !isString(data.text)) return [];
         const reasoning = type === 'session.reasoning.ended';
         const partID = reasoning ? reasoningPartId(messageID, ordinal) : textPartId(messageID, ordinal);
         const ops = createIfMissing();
@@ -392,14 +402,14 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       }
 
       case 'session.tool.input.started': {
-        if (typeof messageID !== 'string' || typeof data.id !== 'string') return [];
+        if (!isString(messageID) || !isString(data.id)) return [];
         const ops = createIfMissing();
         if (!findPart(messageID, data.id)) {
           ops.push(
             partOp(messageID, data.id, {
               type: 'tool',
               id: data.id,
-              name: typeof data.name === 'string' ? data.name : '',
+              name: isString(data.name) ? data.name : '',
               state: { status: 'streaming', input: '' },
               time: { created },
             }),
@@ -409,7 +419,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       }
 
       case 'session.tool.input.delta': {
-        if (typeof messageID !== 'string' || typeof data.id !== 'string' || typeof data.delta !== 'string') return [];
+        if (!isString(messageID) || !isString(data.id) || !isString(data.delta)) return [];
         const existing = findPart(messageID, data.id);
         if (existing && isFinalToolStatus(existing.state?.status)) return [];
         const ops = createIfMissing();
@@ -429,17 +439,17 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       }
 
       case 'session.tool.input.ended': {
-        if (typeof messageID !== 'string' || typeof data.id !== 'string') return [];
+        if (!isString(messageID) || !isString(data.id)) return [];
         const existing = findPart(messageID, data.id);
         if (existing && isFinalToolStatus(existing.state?.status)) return [];
         const ops = createIfMissing();
-        const accumulated = typeof existing?.state?.input === 'string' ? existing.state.input : '';
+        const accumulated = existing?.state?.input ?? '';
         ops.push(
           partOp(messageID, data.id, {
             type: 'tool',
             id: data.id,
             name: existing?.name ?? '',
-            state: { status: 'streaming', input: typeof data.text === 'string' ? data.text : accumulated },
+            state: { status: 'streaming', input: data.text ?? accumulated },
             time: { ...(existing?.time ?? { created }) },
           }),
         );
@@ -448,7 +458,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
 
       case 'session.tool.success':
       case 'session.tool.failed': {
-        if (typeof messageID !== 'string' || typeof data.id !== 'string') return [];
+        if (!isString(messageID) || !isString(data.id)) return [];
         const existing = findPart(messageID, data.id);
         if (existing && isFinalToolStatus(existing.state?.status)) return [];
         const ops = createIfMissing();
@@ -464,16 +474,15 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
                 content: data.content,
                 metadata: data.metadata,
               });
-        ops.push(
-          partOp(messageID, data.id, {
-            type: 'tool',
-            id: data.id,
-            name: existing?.name ?? '',
-            ...(data.executed !== undefined ? { executed: data.executed } : {}),
-            state,
-            time: { ...baseTime, completed: created },
-          }),
-        );
+        const part = {
+          type: 'tool',
+          id: data.id,
+          name: existing?.name ?? '',
+          state,
+          time: { ...baseTime, completed: created },
+        };
+        if (data.executed !== undefined) part.executed = data.executed;
+        ops.push(partOp(messageID, data.id, part));
         return ops;
       }
 
@@ -487,13 +496,13 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
   // -------------------------------------------------------------------------
 
   const beginUserMessage = ({ text, messageID } = {}) => {
-    if (closed || typeof messageID !== 'string' || recordByID.has(messageID)) return;
+    if (closed || !isString(messageID) || recordByID.has(messageID)) return;
     const op = {
       kind: 'user',
       op: 'create',
       messageID,
       created: Date.now(),
-      text: typeof text === 'string' ? text : '',
+      text: isString(text) ? text : '',
     };
     applyOp(op);
     enqueue(op);
@@ -514,7 +523,7 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
    */
   const listRecords = ({ limit, cursor, order } = {}) => {
     const size = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT;
-    const hasCursor = typeof cursor === 'string' && cursor.length > 0;
+    const hasCursor = isString(cursor) && cursor.length > 0;
     const cursorIndex = hasCursor ? records.findIndex((record) => record.info.id === cursor) : -1;
     if (hasCursor && cursorIndex < 0) return { items: [], next: undefined };
     if (order === 'asc') {

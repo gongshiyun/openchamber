@@ -1,5 +1,7 @@
 import express from 'express';
 
+import { isString } from '../shared/guards.js';
+
 /**
  * The OpenCode v2 HTTP subset a Claude session serves, mounted at `/api`.
  *
@@ -105,7 +107,7 @@ export function createClaudeRoutes({ registry }) {
   /** The directory a create names: the body's location first, then the SDK's header. */
   const requestDirectory = (req) => {
     const fromBody = req.body?.location?.directory;
-    if (typeof fromBody === 'string' && fromBody !== '') return fromBody;
+    if (isString(fromBody) && fromBody !== '') return fromBody;
     const raw = [req.headers['x-opencode-directory']].flat().find(Boolean);
     if (!raw) return undefined;
     const unwrapped = req.headers['x-opencode-directory-encoding'] === 'uri' ? decodeOnce(String(raw)) : String(raw);
@@ -115,7 +117,7 @@ export function createClaudeRoutes({ registry }) {
   /** `message.list` sends `limit` as a query string; the registry pages with a number. */
   const readLimit = (value) => {
     const raw = Array.isArray(value) ? value[0] : value;
-    if (typeof raw !== 'string' || raw === '') return undefined;
+    if (!isString(raw) || raw === '') return undefined;
     const limit = Number(raw);
     return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
   };
@@ -151,7 +153,7 @@ export function createClaudeRoutes({ registry }) {
   // metadata is written through the OpenChamber metadata route, not here.
   router.patch('/session/:sessionID', forClaudeSession(async (req, res) => {
     const title = req.body?.title;
-    if (typeof title !== 'string') return sendError(res, 400, 'InvalidRequestError', 'title is required');
+    if (!isString(title)) return sendError(res, 400, 'InvalidRequestError', 'title is required');
     await registry.renameSession(req.params.sessionID, title);
     res.status(204).end();
   }));
@@ -165,7 +167,7 @@ export function createClaudeRoutes({ registry }) {
   // session.move — POST /api/session/:sessionID/move
   router.post('/session/:sessionID/move', forClaudeSession(async (req, res) => {
     const directory = req.body?.directory;
-    if (typeof directory !== 'string' || directory === '') {
+    if (!isString(directory) || directory === '') {
       return sendError(res, 400, 'InvalidRequestError', 'directory is required');
     }
     await registry.moveSession(req.params.sessionID, directory);
@@ -191,7 +193,7 @@ export function createClaudeRoutes({ registry }) {
   router.post('/session/:sessionID/prompt', forClaudeSession(async (req, res) => {
     const body = req.body ?? {};
     const text = body.text;
-    if (typeof text !== 'string') return sendError(res, 400, 'InvalidRequestError', 'prompt text is required');
+    if (!isString(text)) return sendError(res, 400, 'InvalidRequestError', 'prompt text is required');
     res.status(200).json({
       data: await registry.sendPrompt(req.params.sessionID, {
         text,
@@ -216,7 +218,7 @@ export function createClaudeRoutes({ registry }) {
   router.get('/session/:sessionID/message', forClaudeSession(async (req, res) => {
     const page = await registry.getMessages(req.params.sessionID, {
       limit: readLimit(req.query.limit),
-      cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+      cursor: isString(req.query.cursor) ? req.query.cursor : undefined,
       order: req.query.order === 'asc' || req.query.order === 'desc' ? req.query.order : undefined,
     });
     res.status(200).json({ data: page.data, cursor: page.cursor });

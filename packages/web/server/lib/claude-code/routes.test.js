@@ -14,16 +14,15 @@ const createRegistry = (overrides = {}) => {
   const calls = [];
   const record = (name, answer) => (...args) => {
     calls.push([name, ...args]);
-    return typeof answer === 'function' ? answer(...args) : answer;
+    return answer instanceof Function ? answer(...args) : answer;
   };
   const registry = {
     isClaudeSession: (sessionID) => String(sessionID).startsWith('ses_claude'),
-    createSession: record('createSession', ({ id, title, metadata, directory }) => ({
-      id: id ?? 'ses_claude_new',
-      title,
-      metadata,
-      ...(directory ? { location: { directory } } : {}),
-    })),
+    createSession: record('createSession', ({ id, title, metadata, directory }) => {
+      const session = { id: id ?? 'ses_claude_new', title, metadata };
+      if (directory) session.location = { directory };
+      return session;
+    }),
     getSession: record('getSession', (sessionID) => ({ id: sessionID, location: { directory: '/repo/app' } })),
     renameSession: record('renameSession', undefined),
     removeSession: record('removeSession', undefined),
