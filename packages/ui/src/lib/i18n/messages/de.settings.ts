@@ -1146,6 +1146,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': 'Optionaler absoluter Pfad zur',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'Binary.',
   'settings.openchamber.opencodeCli.field.binaryPath': 'OpenCode Binary-Pfad',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Claude Code CLI-Pfad',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'Optionaler absoluter Pfad zur claude CLI. Ist er gesetzt, hat er Vorrang vor der automatischen Erkennung.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'Dein Administrator hat diesen Pfad festgelegt, daher startet OpenChamber OpenCode immer von hier.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'OpenCode-Update-Benachrichtigungen anzeigen',

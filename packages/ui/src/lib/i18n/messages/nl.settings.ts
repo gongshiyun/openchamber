@@ -1205,6 +1205,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': 'Optioneel absoluut pad naar het',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'programma.',
   'settings.openchamber.opencodeCli.field.binaryPath': 'Pad naar de OpenCode-binary',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Pad naar de Claude Code CLI',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'Optioneel absoluut pad naar de claude CLI. Als dit is ingesteld, gaat het voor op automatische detectie.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'Je beheerder heeft dit pad ingesteld, dus OpenChamber start OpenCode altijd vanaf hier.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'Updatemeldingen van OpenCode tonen',

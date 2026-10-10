@@ -1172,6 +1172,8 @@ export const settingsDict = {
   "settings.openchamber.opencodeCli.tooltipPrefix": "Ruta absoluta opcional al",
   "settings.openchamber.opencodeCli.tooltipSuffix": "ejecutable.",
   "settings.openchamber.opencodeCli.field.binaryPath": "Ruta del ejecutable de OpenCode",
+  "settings.openchamber.claudeCli.field.binaryPath": "Ruta de la CLI de Claude Code",
+  "settings.openchamber.claudeCli.field.binaryPathInfo": "Ruta absoluta opcional a la CLI de claude. Si se define, tiene prioridad sobre la detección automática.",
   "settings.openchamber.opencodeCli.field.binaryPathPlaceholder": "/Users/you/.bun/bin/opencode",
   "settings.openchamber.opencodeCli.field.pinnedByAdministrator": "Tu administrador fijó esta ruta, así que OpenChamber siempre inicia OpenCode desde ella.",
   "settings.openchamber.opencodeCli.field.showUpdateNotifications": "Mostrar notificaciones de actualización de OpenCode",

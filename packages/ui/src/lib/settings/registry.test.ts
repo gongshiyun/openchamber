@@ -53,6 +53,11 @@ describe('settings registry', () => {
     expect(parseSettingsDocument({ locale: 'xx' })).toEqual({});
     expect(parseSettingsDocument({ locale: 3 })).toEqual({});
   });
+  test('accepts a Claude Code CLI path and rejects anything else', () => {
+    expect(parseSettingsDocument({ claudeBinary: ' /usr/local/bin/claude ' })).toEqual({ claudeBinary: '/usr/local/bin/claude' });
+    expect(parseSettingsDocument({ claudeBinary: '' })).toEqual({ claudeBinary: '' });
+    expect(parseSettingsDocument({ claudeBinary: 42 })).toEqual({});
+  });
   test('project paths retain absolute Windows roots across parsing and serialization', () => {
     const parsed = parseSettingsDocument({ projects: [
       { path: 'c:\\', label: 'Drive' },

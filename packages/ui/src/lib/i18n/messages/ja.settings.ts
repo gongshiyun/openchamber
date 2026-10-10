@@ -1205,6 +1205,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': '以下への絶対パス（任意）:',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'バイナリ。',
   'settings.openchamber.opencodeCli.field.binaryPath': 'OpenCode バイナリパス',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Claude Code CLI のパス',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'claude CLI への絶対パス（任意）。設定すると自動検出より優先されます。',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'このパスは管理者が設定しています。OpenChamber は常にここから OpenCode を起動します。',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'OpenCode のアップデート通知を表示',

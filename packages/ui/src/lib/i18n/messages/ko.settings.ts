@@ -1172,6 +1172,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': '선택적 절대 경로:',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'binary.',
   'settings.openchamber.opencodeCli.field.binaryPath': 'OpenCode binary 경로',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Claude Code CLI 경로',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'claude CLI의 선택적 절대 경로입니다. 설정하면 자동 감지보다 우선합니다.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': '관리자가 이 경로를 지정했습니다. OpenChamber는 항상 이 경로에서 OpenCode를 시작합니다.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'OpenCode 업데이트 알림 표시',

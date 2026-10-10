@@ -1180,6 +1180,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': 'İsteğe bağlı mutlak dosya yolu: ',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'binary dosyası.',
   'settings.openchamber.opencodeCli.field.binaryPath': 'OpenCode Binary Yolu',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Claude Code CLI yolu',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'claude CLI için isteğe bağlı mutlak yol. Ayarlanırsa otomatik algılamaya göre öncelik kazanır.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'Bu yolu yöneticiniz belirledi; OpenChamber OpenCode’u her zaman buradan başlatır.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'OpenCode güncelleme bildirimlerini göster',

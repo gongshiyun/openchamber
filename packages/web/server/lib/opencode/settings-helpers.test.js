@@ -85,6 +85,15 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ lastDirectory: 42 })).toEqual({});
   });
 
+  it('sanitizes the optional Claude Code CLI path and returns it on a read', () => {
+    const helpers = createTestHelpers();
+    expect(helpers.sanitizeSettingsUpdate({ claudeBinary: ' /usr/local/bin/claude ' })).toEqual({ claudeBinary: '/usr/local/bin/claude' });
+    expect(helpers.sanitizeSettingsUpdate({ claudeBinary: '' })).toEqual({ claudeBinary: '' });
+    expect(helpers.sanitizeSettingsUpdate({ claudeBinary: 42 })).toEqual({});
+    const saved = helpers.mergePersistedSettings({}, helpers.sanitizeSettingsUpdate({ claudeBinary: '/usr/local/bin/claude' }));
+    expect(helpers.formatSettingsResponse(saved).claudeBinary).toBe('/usr/local/bin/claude');
+  });
+
   it('round-trips section order and preserves it across unrelated writes', () => {
     const helpers = createTestHelpers();
     const changes = helpers.sanitizeSettingsUpdate({ workStatusSectionOrder: ['mcp', 'session', 'mcp', null, ''] });
@@ -819,7 +828,7 @@ describe('settings registry gate', () => {
   const validValues = {
     themeId: 'openchamber-dark', locale: 'zh-CN', useSystemTheme: true, themeVariant: 'dark', lightThemeId: 'openchamber-light', darkThemeId: 'openchamber-dark',
     splashBgLight: '#fff', splashFgLight: '#000', splashBgDark: '#000', splashFgDark: '#fff',
-    lastDirectory: '/home/testuser/project', homeDirectory: '/home/testuser', opencodeBinary: '/usr/local/bin/opencode',
+    lastDirectory: '/home/testuser/project', homeDirectory: '/home/testuser', opencodeBinary: '/usr/local/bin/opencode', claudeBinary: '/usr/local/bin/claude',
     projects: [{ id: 'p', path: '/home/testuser/project' }], activeProjectId: 'p',
     securityScopedBookmarks: ['bookmark'], pinnedDirectories: ['/home/testuser/project'],
     desktopLanAccessEnabled: true, desktopKeepAwakeEnabled: true, desktopMinimizeToTrayEnabled: true, desktopMacMenuBarEnabled: true, desktopLinuxNativeFrame: true, sidebarShowChatsSection: false,

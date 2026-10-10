@@ -1086,6 +1086,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': 'Chemin absolu facultatif vers le',
   'settings.openchamber.opencodeCli.tooltipSuffix': 'binaire.',
   'settings.openchamber.opencodeCli.field.binaryPath': 'Chemin binaire OpenCode',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Chemin de la CLI Claude Code',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'Chemin absolu facultatif vers la CLI claude. S’il est défini, il a la priorité sur la détection automatique.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'Votre administrateur a défini ce chemin : OpenChamber démarre toujours OpenCode depuis celui-ci.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'Afficher les notifications de mise à jour de OpenCode',

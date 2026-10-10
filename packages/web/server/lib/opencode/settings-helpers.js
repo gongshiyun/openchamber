@@ -257,6 +257,13 @@ export const createSettingsHelpers = (dependencies) => {
       const normalized = normalizeDirectoryPath(candidate.opencodeBinary).trim();
       result.opencodeBinary = normalized;
     }
+    // Absolute path to the claude CLI binary (optional override for the
+    // Claude Code backend). Empty means "not set": the backend falls back to
+    // CLAUDE_BINARY, PATH, then the known install locations.
+    if (typeof candidate.claudeBinary === 'string') {
+      const normalized = normalizeDirectoryPath(candidate.claudeBinary).trim();
+      result.claudeBinary = normalized;
+    }
     if (typeof candidate.workStatusPanelEnabled === 'boolean') {
       result.workStatusPanelEnabled = candidate.workStatusPanelEnabled;
     }

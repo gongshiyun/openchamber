@@ -1172,6 +1172,8 @@ export const settingsDict = {
   "settings.openchamber.opencodeCli.tooltipPrefix": "Додатковий абсолютний шлях до",
   "settings.openchamber.opencodeCli.tooltipSuffix": "бінарного файлу.",
   "settings.openchamber.opencodeCli.field.binaryPath": "Шлях до бінарного файлу OpenCode",
+  "settings.openchamber.claudeCli.field.binaryPath": "Шлях до CLI Claude Code",
+  "settings.openchamber.claudeCli.field.binaryPathInfo": "Необов'язковий абсолютний шлях до CLI claude. Якщо задано, має пріоритет над автоматичним визначенням.",
   "settings.openchamber.opencodeCli.field.binaryPathPlaceholder": "/Users/you/.bun/bin/opencode",
   "settings.openchamber.opencodeCli.field.pinnedByAdministrator": "Цей шлях задав ваш адміністратор, тож OpenChamber завжди запускає OpenCode звідси.",
   "settings.openchamber.opencodeCli.field.showUpdateNotifications": "Показувати сповіщення про оновлення OpenCode",

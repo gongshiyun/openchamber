@@ -1172,6 +1172,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.tooltipPrefix': '可选的',
   'settings.openchamber.opencodeCli.tooltipSuffix': '二进制绝对路径。',
   'settings.openchamber.opencodeCli.field.binaryPath': 'OpenCode 可执行文件路径',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Claude Code CLI 路径',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'claude CLI 的可选绝对路径。设置后将优先于自动检测。',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': '此路径由管理员设定，OpenChamber 始终从这里启动 OpenCode。',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': '显示 OpenCode 更新通知',

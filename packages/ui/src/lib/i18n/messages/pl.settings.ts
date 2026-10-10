@@ -936,6 +936,8 @@ export const settingsDict = {
   'settings.openchamber.opencodeCli.actions.saveAndReload': 'Zapisz + Przeładuj',
   'settings.openchamber.opencodeCli.dialog.selectBinaryTitle': 'Wybierz plik binarny opencode',
   'settings.openchamber.opencodeCli.field.binaryPath': 'Ścieżka do pliku binarnego OpenCode',
+  'settings.openchamber.claudeCli.field.binaryPath': 'Ścieżka do CLI Claude Code',
+  'settings.openchamber.claudeCli.field.binaryPathInfo': 'Opcjonalna ścieżka absolutna do CLI claude. Po ustawieniu ma pierwszeństwo przed automatycznym wykrywaniem.',
   'settings.openchamber.opencodeCli.field.binaryPathPlaceholder': '/Users/you/.bun/bin/opencode',
   'settings.openchamber.opencodeCli.field.pinnedByAdministrator': 'Tę ścieżkę ustawił Twój administrator, więc OpenChamber zawsze uruchamia OpenCode z niej.',
   'settings.openchamber.opencodeCli.field.showUpdateNotifications': 'Pokazuj powiadomienia o aktualizacjach OpenCode',
