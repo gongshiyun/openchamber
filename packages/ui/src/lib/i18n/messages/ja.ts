@@ -2599,6 +2599,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.draftPicker.projectTitle': 'プロジェクト',
   'chat.chatInput.backend.label': 'セッションのバックエンド',
   'chat.chatInput.backend.claudeModelLabel': 'Claude モデル',
+  'chat.chatInput.backend.switchFailed': 'Claude モデルを切り替えられませんでした。もう一度お試しください。',
   'chat.chatInput.draftPicker.searchProjects': 'プロジェクトを検索...',
   'chat.chatInput.draftPicker.searchBranches': 'ブランチを検索...',
   'chat.chatInput.draftPicker.noProjectsFound': 'プロジェクトが見つかりません。',

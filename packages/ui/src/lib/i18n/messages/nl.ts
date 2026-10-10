@@ -2600,6 +2600,7 @@ export const dict = {
   'chat.chatInput.draftPicker.projectTitle': 'Project',
   'chat.chatInput.backend.label': 'Backend van de sessie',
   'chat.chatInput.backend.claudeModelLabel': 'Claude-model',
+  'chat.chatInput.backend.switchFailed': 'Kan het Claude-model niet wisselen. Probeer het opnieuw.',
   'chat.chatInput.draftPicker.searchProjects': 'Projecten zoeken...',
   'chat.chatInput.draftPicker.searchBranches': 'Branches zoeken...',
   'chat.chatInput.draftPicker.noProjectsFound': 'Geen projecten gevonden.',

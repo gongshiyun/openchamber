@@ -2554,6 +2554,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.chatInput.draftPicker.projectTitle": "Projeto",
   "chat.chatInput.backend.label": "Backend da sessão",
   "chat.chatInput.backend.claudeModelLabel": "Modelo Claude",
+  "chat.chatInput.backend.switchFailed": "Não foi possível trocar o modelo Claude. Tente novamente.",
   "chat.chatInput.draftPicker.searchProjects": "Buscar projetos...",
   "chat.chatInput.draftPicker.searchBranches": "Buscar branches...",
   "chat.chatInput.draftPicker.noProjectsFound": "Nenhum projeto encontrado.",

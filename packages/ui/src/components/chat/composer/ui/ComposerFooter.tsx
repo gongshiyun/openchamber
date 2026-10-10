@@ -19,8 +19,10 @@ import { ComposerDictation } from '@/components/dictation/ComposerDictation';
 import { Icon } from '@/components/icon/Icon';
 import type { GuestAttachItem } from '@/hooks/useGuestSurfaces';
 import { useI18n } from '@/lib/i18n';
+import { selectClaudeSessionModel } from '@/lib/sessionBackend';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useSessionSelector } from '@/sync/sync-context';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
@@ -30,6 +32,7 @@ import { ComposerAttachmentControls } from './ComposerAttachmentControls';
 import { DraftBackendControls } from './DraftBackendControls';
 import { FocusModeButton } from './FocusModeButton';
 import { PermissionAutoAcceptButton } from './PermissionAutoAcceptButton';
+import { SessionClaudeModelControl } from './SessionClaudeModelControl';
 import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
 import type { BtwSelection } from '@/stores/useBtwStore';
 
@@ -168,6 +171,17 @@ function ComposerFooterView(props: ComposerFooterProps) {
     // controls have nothing to choose: the backend control and its Claude
     // model dropdown take their place.
     const draftClaudeBackend = useSessionUIStore((state) => state.newSessionDraft.claudeBackend);
+    // The same goes for a running Claude session: its composer picks the
+    // Claude alias in place of the OpenCode controls, and the send path leaves
+    // the session's model alone (see resolveSendSelection).
+    const sessionClaudeModel = useSessionSelector(
+        newSessionDraftOpen ? null : currentSessionId,
+        directory,
+        selectClaudeSessionModel,
+    );
+    const claudeControlsShown = newSessionDraftOpen
+        ? draftClaudeBackend !== undefined
+        : sessionClaudeModel !== null;
     const [dictationSupported] = React.useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
     const showDictation = dictationEnabled && dictationSupported;
 
@@ -306,9 +320,18 @@ function ComposerFooterView(props: ComposerFooterProps) {
                     </div>
                     <div className={cn('flex items-center flex-1 justify-end', footerGapClass, 'md:gap-x-3')} data-dictation-chain="true">
                         {waitingForOpenCode ? <OpenCodeStartupNote className="flex-shrink-0" /> : null}
-                        {parallelRun ? <div className="flex-1" /> : isBtw ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={modelSessionId ?? null} selection={btwSelection} /> : pinnedSelection ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={currentSessionId} selection={pinnedSelection} agentSelectable /> : <>
+                        {parallelRun ? <div className="flex-1" /> : isBtw ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={modelSessionId ?? null} selection={btwSelection} /> : pinnedSelection ? (
+                            sessionClaudeModel !== null && currentSessionId ? (
+                                <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                            ) : (
+                                <ModelControls className="flex-1 min-w-0 justify-end" sessionId={currentSessionId} selection={pinnedSelection} agentSelectable />
+                            )
+                        ) : <>
                             {newSessionDraftOpen ? <DraftBackendControls /> : null}
-                            {newSessionDraftOpen && draftClaudeBackend ? null : <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} onRunInParallel={onRunInParallel} />}
+                            {!newSessionDraftOpen && sessionClaudeModel !== null && currentSessionId ? (
+                                <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                            ) : null}
+                            {claudeControlsShown ? null : <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} onRunInParallel={onRunInParallel} />}
                         </>}
                         {!isBtw ? <MemoComposerDictation
                             radius={chatInputRadius}

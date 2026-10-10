@@ -2433,6 +2433,7 @@ export const dict = {
   'chat.chatInput.draftPicker.projectTitle': 'Proje',
   'chat.chatInput.backend.label': 'Oturum arka ucu',
   'chat.chatInput.backend.claudeModelLabel': 'Claude modeli',
+  'chat.chatInput.backend.switchFailed': 'Claude modeli değiştirilemedi. Tekrar deneyin.',
   'chat.chatInput.draftPicker.searchProjects': 'Projelerde ara...',
   'chat.chatInput.draftPicker.searchBranches': 'Branch\'lerde ara...',
   'chat.chatInput.draftPicker.noProjectsFound': 'Proje bulunamadı.',

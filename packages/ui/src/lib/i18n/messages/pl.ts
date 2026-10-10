@@ -1378,6 +1378,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.draftPicker.projectTitle': 'Projekt',
   'chat.chatInput.backend.label': 'Backend sesji',
   'chat.chatInput.backend.claudeModelLabel': 'Model Claude',
+  'chat.chatInput.backend.switchFailed': 'Nie udało się przełączyć modelu Claude. Spróbuj ponownie.',
   'chat.chatInput.draftPicker.searchProjects': 'Szukaj projektów...',
   'chat.chatInput.draftPicker.searchBranches': 'Szukaj gałęzi...',
   'chat.chatInput.draftPicker.noProjectsFound': 'Nie znaleziono projektów.',

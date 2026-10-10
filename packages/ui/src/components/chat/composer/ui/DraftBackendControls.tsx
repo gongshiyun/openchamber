@@ -2,9 +2,10 @@
  * The backend a new session will run on, and — when Claude Code is chosen —
  * the Claude model alias it starts on.
  *
- * Draft-only: an existing session's backend is fixed at creation. Desktop
- * composer footer only (the mobile control cluster is out of v1 scope), next
- * to the model controls it replaces while Claude is selected.
+ * Draft-only: an existing session's backend is fixed at creation, and its
+ * composer uses SessionClaudeModelControl instead. Desktop composer footer
+ * only (the mobile control cluster is out of v1 scope), next to the model
+ * controls it replaces while Claude is selected.
  */
 
 import React from 'react';
@@ -18,20 +19,13 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useI18n } from '@/lib/i18n';
-import { CLAUDE_MODEL_ALIASES, DEFAULT_CLAUDE_MODEL, type ClaudeModelAlias } from '@/lib/sessionBackend';
+import { DEFAULT_CLAUDE_MODEL } from '@/lib/sessionBackend';
 import { cn } from '@/lib/utils';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { ClaudeMenuCheck, ClaudeModelMenu, claudeMenuTriggerClassName } from './ClaudeModelMenu';
 
 /** Product names stay literal in every locale. */
 const BACKEND_LABELS = { opencode: 'OpenCode', claude: 'Claude Code' } as const;
-
-const modelLabel = (alias: ClaudeModelAlias) => alias.charAt(0).toUpperCase() + alias.slice(1);
-
-const triggerClassName = 'normal-case px-1.5 hover:bg-transparent data-[popup-open]:bg-transparent';
-
-const MenuCheck: React.FC<{ selected: boolean }> = ({ selected }) => (
-    selected ? <Icon name="check" className="size-4 shrink-0 text-muted-foreground" /> : null
-);
 
 function DraftBackendControlsView({ className }: { className?: string }) {
     const { t } = useI18n();
@@ -46,7 +40,7 @@ function DraftBackendControlsView({ className }: { className?: string }) {
                     <Button
                         variant="ghost"
                         size="sm"
-                        className={triggerClassName}
+                        className={claudeMenuTriggerClassName}
                         aria-label={t('chat.chatInput.backend.label')}
                     >
                         <span className="truncate">{BACKEND_LABELS[backend]}</span>
@@ -64,40 +58,18 @@ function DraftBackendControlsView({ className }: { className?: string }) {
                         >
                             <div className="flex w-full min-w-0 items-center justify-between gap-2">
                                 <span className="truncate font-medium text-foreground">{BACKEND_LABELS[option]}</span>
-                                <MenuCheck selected={backend === option} />
+                                <ClaudeMenuCheck selected={backend === option} />
                             </div>
                         </DropdownMenuItem>
                     ))}
                 </DropdownMenuContent>
             </DropdownMenu>
             {claudeBackend ? (
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className={triggerClassName}
-                            aria-label={t('chat.chatInput.backend.claudeModelLabel')}
-                        >
-                            <span className="truncate">{modelLabel(claudeBackend.model)}</span>
-                            <Icon name="arrow-down-s" className="size-3.5 shrink-0 opacity-60" />
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent side="top" align="start" className="min-w-36">
-                        {CLAUDE_MODEL_ALIASES.map((alias) => (
-                            <DropdownMenuItem
-                                key={alias}
-                                className="typography-meta"
-                                onSelect={() => setDraftClaudeBackend({ model: alias })}
-                            >
-                                <div className="flex w-full min-w-0 items-center justify-between gap-2">
-                                    <span className="truncate font-medium text-foreground">{modelLabel(alias)}</span>
-                                    <MenuCheck selected={claudeBackend.model === alias} />
-                                </div>
-                            </DropdownMenuItem>
-                        ))}
-                    </DropdownMenuContent>
-                </DropdownMenu>
+                <ClaudeModelMenu
+                    model={claudeBackend.model}
+                    onSelect={(model) => setDraftClaudeBackend({ model })}
+                    ariaLabel={t('chat.chatInput.backend.claudeModelLabel')}
+                />
             ) : null}
         </div>
     );

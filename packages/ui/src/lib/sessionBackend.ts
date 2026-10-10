@@ -38,3 +38,23 @@ export const isClaudeBackendSession = (session: Pick<Session, "metadata">): bool
   const openchamber = session.metadata?.openchamber
   return isJsonObject(openchamber) && openchamber.backend === CLAUDE_BACKEND
 }
+
+/** True when the value names a Claude model alias the backend accepts. */
+export const isClaudeModelAlias = (value: string): value is ClaudeModelAlias =>
+  CLAUDE_MODEL_ALIASES.some((alias) => alias === value)
+
+/**
+ * The Claude model a session record runs on, or null when the session is not
+ * Claude-backed. A Claude record whose model is not a known alias — not
+ * written yet, or written by a version that knew a different list — reads as
+ * the default alias, so the picker always has a selection to show.
+ */
+export const selectClaudeSessionModel = (
+  session: Pick<Session, "metadata" | "model"> | undefined,
+): ClaudeModelAlias | null => {
+  if (!session || !isClaudeBackendSession(session)) return null
+  const model = session.model
+  return model && model.providerID === CLAUDE_PROVIDER_ID && isClaudeModelAlias(model.id)
+    ? model.id
+    : DEFAULT_CLAUDE_MODEL
+}

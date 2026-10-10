@@ -35,7 +35,7 @@ import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
 import { normalizePath } from "@/lib/pathNormalization"
 import { CHAT_DRAFT_PROJECT_ID, createChatDirectory, deleteChatDirectory, getChatsRootFromDirectory, isChatDirectoryPath, warmChatsRootDirectory } from "@/lib/chatDirectories"
-import { CLAUDE_PROVIDER_ID, type ClaudeModelAlias } from "@/lib/sessionBackend"
+import { CLAUDE_PROVIDER_ID, isClaudeBackendSession, type ClaudeModelAlias } from "@/lib/sessionBackend"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { composeForkSessionMessage } from "@/lib/messages/executionMeta"
 import { findLatestUserModelChoice } from "@/lib/messages/userModelChoice"
@@ -133,6 +133,14 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
 // Send routing — shell mode, slash commands, or normal prompt
 // ---------------------------------------------------------------------------
 
+/** The live session record for an id, from its directory store or any initialized one. */
+const findLiveSessionRecord = (sessionId: string, directory?: string | null): Session | undefined =>
+  (getDirectoryState(directory ?? undefined)?.session ?? getAllSyncSessions())
+    .find((candidate) => candidate.id === sessionId)
+
+/** The model and agent a send carries as a switch, each only when it differs. */
+export type SendSelection = { model?: ModelRef; agent?: string }
+
 /**
  * The model and agent a send has to switch the session to, or nothing.
  *
@@ -151,9 +159,13 @@ export function resolveSendSelection(
   sessionId: string,
   directory: string | undefined,
   desired: { providerID: string; modelID: string; variant?: string; agent?: string },
-): { model?: ModelRef; agent?: string } {
-  const sessions = getDirectoryState(directory)?.session ?? getAllSyncSessions()
-  const session = sessions.find((candidate) => candidate.id === sessionId)
+): SendSelection {
+  const session = findLiveSessionRecord(sessionId, directory)
+  // A Claude session runs on its own backend model. The composer's OpenCode
+  // pick is not a selection for it, and a switch would take the session off
+  // Claude, so nothing travels: the Claude model control switches the alias
+  // explicitly instead.
+  if (session && isClaudeBackendSession(session)) return {}
   const model: ModelRef = { providerID: desired.providerID, id: desired.modelID, variant: desired.variant }
   const modelChanged = !session?.model
     || session.model.providerID !== model.providerID
@@ -1929,17 +1941,25 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
       // ---- Existing session ----
       const targetSessionId = capturedTarget?.sessionId ?? options?.sessionId ?? get().currentSessionId
+      // A Claude session runs on its own backend model: the composer's OpenCode
+      // pick and agent are not selections for it, so they are neither recorded
+      // nor sent (see resolveSendSelection). Its own record is the source of
+      // truth, and the Claude model control switches the alias explicitly.
+      const targetSession = targetSessionId
+        ? findLiveSessionRecord(targetSessionId, capturedTarget?.directory ?? options?.directory)
+        : undefined
+      const targetIsClaude = targetSession !== undefined && isClaudeBackendSession(targetSession)
       const sessionAgentSelection = targetSessionId
         ? useSelectionStore.getState().getSessionAgentSelection(targetSessionId)
         : null
       const configAgentName = useConfigStore.getState().currentAgentName
       const effectiveAgent = trimmedAgent || sessionAgentSelection || configAgentName || undefined
 
-      if (targetSessionId) {
+      if (targetSessionId && !targetIsClaude) {
         useSelectionStore.getState().saveSessionModelSelection(targetSessionId, providerID, modelID)
       }
 
-      if (targetSessionId && effectiveAgent) {
+      if (targetSessionId && !targetIsClaude && effectiveAgent) {
         useSelectionStore.getState().saveSessionAgentSelection(targetSessionId, effectiveAgent)
         useSelectionStore.getState().saveAgentModelVariantForSession(
           targetSessionId,

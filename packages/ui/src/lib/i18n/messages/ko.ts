@@ -2600,6 +2600,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.draftPicker.projectTitle': '프로젝트',
   'chat.chatInput.backend.label': '세션 백엔드',
   'chat.chatInput.backend.claudeModelLabel': 'Claude 모델',
+  'chat.chatInput.backend.switchFailed': 'Claude 모델을 전환하지 못했습니다. 다시 시도하세요.',
   'chat.chatInput.draftPicker.searchProjects': '프로젝트 검색...',
   'chat.chatInput.draftPicker.searchBranches': '브랜치 검색...',
   'chat.chatInput.draftPicker.noProjectsFound': '프로젝트를 찾을 수 없습니다.',

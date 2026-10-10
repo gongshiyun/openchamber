@@ -2288,6 +2288,7 @@ export const dict = {
   'chat.chatInput.draftPicker.projectTitle': 'Projet',
   'chat.chatInput.backend.label': 'Backend de la session',
   'chat.chatInput.backend.claudeModelLabel': 'Modèle Claude',
+  'chat.chatInput.backend.switchFailed': 'Impossible de changer le modèle Claude. Réessaie.',
   'chat.chatInput.draftPicker.searchProjects': 'Rechercher des projets...',
   'chat.chatInput.draftPicker.searchBranches': 'Rechercher des branches...',
   'chat.chatInput.draftPicker.noProjectsFound': 'Aucun projet trouvé.',

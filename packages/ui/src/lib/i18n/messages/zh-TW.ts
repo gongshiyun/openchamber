@@ -2575,6 +2575,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.draftPicker.projectTitle': '專案',
   'chat.chatInput.backend.label': '工作階段後端',
   'chat.chatInput.backend.claudeModelLabel': 'Claude 模型',
+  'chat.chatInput.backend.switchFailed': '無法切換 Claude 模型。請再試一次。',
   'chat.chatInput.draftPicker.searchProjects': '搜尋專案...',
   'chat.chatInput.draftPicker.searchBranches': '搜尋分支...',
   'chat.chatInput.draftPicker.noProjectsFound': '找不到專案。',
