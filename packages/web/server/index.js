@@ -149,6 +149,7 @@ import { createDevTunnelRuntime } from './lib/dev-tunnel/runtime.js';
 import { registerBrowserControlRoutes } from './lib/browser-control/routes.js';
 import { createManagedConfigRuntime } from './lib/opencode/managed-config-file.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
+import { createClaudeCodeRuntime } from './lib/claude-code/index.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './lib/openchamber-sessions/session-metadata-store.js';
 import { createOpenCodeClient } from './lib/openchamber-sessions/opencode-client.js';
 import { createScheduledTaskService } from './lib/scheduled-tasks/service.js';
@@ -1044,6 +1045,17 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   deltaCoalesceWindowMs: resolveDeltaCoalesceWindowMs(),
 });
 
+// Claude Code sessions: a second backend beside OpenCode, owning its registry
+// and transcripts under the instance data directory. Its wire events enter the
+// same global hub, so every client sees them next to OpenCode's. Started in
+// `main` before the server serves, stopped with the graceful shutdown.
+const claudeCodeRuntime = createClaudeCodeRuntime({
+  dataDir: OPENCHAMBER_DATA_DIR,
+  eventHub: globalMessageStreamHub,
+  // Lazy, per runner: a changed `claudeBinary` applies to the next session.
+  getSettings: () => readSettingsFromDiskMigrated(),
+});
+
 // Jev model routing and the permission safety net. Every failure keeps the
 // user's own model or the auto-accept reply it was asked about.
 const routingRuntime = createRoutingRuntime({
@@ -1242,6 +1254,13 @@ const serverUtilsRuntime = createServerUtilsRuntime({
   // the global SSE stream their events. Called, not captured: the host is made in `main`.
   getMergeSpaceSessionList: () => (spacesHost ? (payload) => spacesHost.mergeSessionList(payload) : null),
   getSpaceEventHub: () => (spacesHost ? globalMessageStreamHub : null),
+  // Claude Code sessions: the router answers ahead of the OpenCode readiness
+  // gate, the list merge appends their records, and their frames ride the
+  // global SSE stream. The runtime is created above, so these are direct.
+  claudeRoutes: claudeCodeRuntime.router,
+  mergeClaudeSessionList: (options) => claudeCodeRuntime.listSessionsForProxy(options),
+  claudeEventHub: globalMessageStreamHub,
+  isClaudeSession: (sessionID) => claudeCodeRuntime.isClaudeSession(sessionID),
   fs,
   os,
   path,
@@ -1673,6 +1692,13 @@ const openChamberSessionService = createOpenChamberSessionService({
   dataDir: OPENCHAMBER_DATA_DIR,
   sessionMetadataStore,
   persistSessionMetadata: persistSessionMetadataPatch,
+  // Claude sessions keep their OpenChamber metadata in the Claude registry,
+  // not on an OpenCode record; the adapter branches the metadata routes to it.
+  claudeSessionMetadata: {
+    isClaudeSession: (sessionID) => claudeCodeRuntime.isClaudeSession(sessionID),
+    get: (sessionID) => claudeCodeRuntime.getSessionMetadata(sessionID),
+    merge: (sessionID, patch, options) => claudeCodeRuntime.mergeSessionMetadata(sessionID, patch, options),
+  },
   broadcastGlobalUiEvent: broadcastOpenChamberUiEvent,
   resolveAutoSelection: (input) => routingRuntime.resolveAutoSelection(input),
   isAutoReady: async () => (await routingRuntime.describe()).autoReady,
@@ -1890,7 +1916,16 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   getSpacesHost: () => spacesHost,
 });
 
-const gracefulShutdown = (...args) => gracefulShutdownRuntime.gracefulShutdown(...args);
+const gracefulShutdown = async (...args) => {
+  // The Claude runners are child processes this server owns: stop them with
+  // the rest of the runtimes, before the HTTP server closes. Repeat calls are
+  // cheap (nothing is left to dispose) and the shutdown runtime still
+  // deduplicates its own sequence.
+  await claudeCodeRuntime.stop().catch((error) => {
+    console.warn(`[claude-code] runtime stop failed: ${error?.message ?? error}`);
+  });
+  return gracefulShutdownRuntime.gracefulShutdown(...args);
+};
 
 async function main(options = {}) {
   beginGuestServiceHost();
@@ -2524,6 +2559,14 @@ async function main(options = {}) {
     persistPath: extensionsPersistPath(OPENCHAMBER_DATA_DIR),
     findGuest: (id) => findInstalledGuest(id, extensionsPersistPath(OPENCHAMBER_DATA_DIR)),
     idleStopMs: BROWSER_PROVIDER_IDLE_MS,
+  });
+
+  // The Claude session index must be loaded before the first request is served:
+  // the routes, the list merge and the metadata branch all answer from it. A
+  // corrupt index must not keep the server from booting — the transcripts stay
+  // on disk, and the failure is loud in the log.
+  await claudeCodeRuntime.start().catch((error) => {
+    console.warn(`[claude-code] session index could not be loaded: ${error?.message ?? error}`);
   });
 
   const startupPipelineResult = await startupPipelineRuntime.run({

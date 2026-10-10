@@ -443,6 +443,10 @@ export const createOpenChamberSessionService = (dependencies) => {
     // store, broadcast, and tell the goal loop. Falls back to store+broadcast
     // when it is absent, which is what module tests use.
     persistSessionMetadata = null,
+    // Claude sessions keep their OpenChamber metadata in the Claude registry,
+    // not on an OpenCode record. When this adapter is present, the metadata
+    // routes branch to it; null serves OpenCode alone.
+    claudeSessionMetadata = null,
     createOpenCodeClient = defaultCreateOpenCodeClient,
     createWorktree = createWorktreeDefault,
     getWorktreeBootstrapStatus = getWorktreeBootstrapStatusDefault,
@@ -762,13 +766,27 @@ export const createOpenChamberSessionService = (dependencies) => {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new OpenChamberControlError('patch must be an object', 400);
     }
+    const directory = asNonEmptyString(payload?.directory) || '';
 
-    return { metadata: await writeMetadata(id, patch, asNonEmptyString(payload?.directory) || '') };
+    if (claudeSessionMetadata?.isClaudeSession(id) === true) {
+      // The runtime emits its own `session.metadata.updated` wire event; the
+      // broadcast here is the control-stream one this route always sends.
+      const metadata = await claudeSessionMetadata.merge(id, patch, { directory });
+      broadcastMetadata(id, metadata);
+      return { metadata };
+    }
+
+    return { metadata: await writeMetadata(id, patch, directory) };
   };
 
   const getMetadata = async (sessionID, directory = '') => {
     const id = asNonEmptyString(sessionID);
     if (!id) throw new OpenChamberControlError('a session id is required', 400);
+    if (claudeSessionMetadata?.isClaudeSession(id) === true) {
+      // The runtime answers null for a session it does not know; the OpenCode
+      // store answers {}, and the route's envelope is the same either way.
+      return { metadata: (await claudeSessionMetadata.get(id)) ?? {} };
+    }
     return { metadata: await sessionMetadataStore.get(id, { directory }) };
   };
 

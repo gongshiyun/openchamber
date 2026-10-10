@@ -1,6 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 
+import express from 'express';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 
 import {
@@ -313,6 +314,14 @@ export const registerOpenCodeProxy = (app, deps) => {
     // the host's own answers go out exactly as before spaces.
     mergeSpaceSessionList = null,
     spaceEventHub = null,
+    // Claude Code sessions: the route subset they serve (mounted ahead of the
+    // readiness gate), the list merge that appends their records, and the hub
+    // whose Claude frames the global SSE stream carries. All absent means this
+    // server serves OpenCode alone, exactly as before.
+    claudeRoutes = null,
+    mergeClaudeSessionList = null,
+    claudeEventHub = null,
+    isClaudeSession = null,
   } = deps;
 
   /**
@@ -389,6 +398,34 @@ export const registerOpenCodeProxy = (app, deps) => {
     if (!archived && !stored) return payload;
     const overlaid = records.map((session) => overlaySession(session, archived, stored));
     return Array.isArray(payload) ? overlaid : { ...payload, data: overlaid };
+  };
+
+  /**
+   * Appends the Claude sessions a list read should carry. The first page only,
+   * like the spaces merge: a cursored read must not re-append records the
+   * client already has. The read's directory and search scope the records,
+   * exactly as they scope the upstream's; a list with nothing to add goes back
+   * as it came. A Claude listing failure must not take the host's list down
+   * with it, so it leaves the payload untouched and says so.
+   */
+  const mergeClaudeSessionsIntoList = async (payload, { listQuery, req }) => {
+    if (listQuery.get('cursor')) return payload;
+    if (!sessionListRecords(payload)) return payload;
+    const directory = listQuery.get('directory') || req.get('x-opencode-directory') || undefined;
+    const search = listQuery.get('search') || undefined;
+    const limit = Number.parseInt(listQuery.get('limit') ?? '', 10);
+    const query = Number.isSafeInteger(limit) && limit > 0
+      ? { directory, search, limit }
+      : { directory, search };
+    try {
+      // A dep-less proxy (OpenCode alone) lists nothing here.
+      const records = await mergeClaudeSessionList?.(query);
+      if (!Array.isArray(records) || records.length === 0) return payload;
+      return Array.isArray(payload) ? [...payload, ...records] : { ...payload, data: [...payload.data, ...records] };
+    } catch (error) {
+      console.warn('[proxy] Claude session list unavailable:', error?.message ?? error);
+      return payload;
+    }
   };
 
   if (app.get('opencodeProxyConfigured')) {
@@ -568,6 +605,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     let upstreamStallTimer = null;
     let didUpstreamStall = false;
     let unsubscribeSpaceEvents = null;
+    let unsubscribeClaudeEvents = null;
     let writeQueue = Promise.resolve(true);
     const sseBoundary = createSseBoundaryTracker();
 
@@ -664,14 +702,16 @@ export const registerOpenCodeProxy = (app, deps) => {
         return writeQueue;
       };
 
-      // The events of isolated spaces ride the global stream too, one block each, written
-      // only between the upstream's own blocks so a block of the host's is never cut.
-      // A directory in the query or in the header scopes the stream to the host's one directory.
+      // The events of isolated spaces and of Claude sessions ride the global stream too, one
+      // block each, written only between the upstream's own blocks so a block of the host's is
+      // never cut. A directory in the query or in the header scopes the host's stream to one
+      // directory; Claude sessions are this server's own, so their frames ride every stream,
+      // as they do on the global WS bridge.
       const isGlobalStream = !new URL(requestUrl, 'http://localhost').searchParams.get('directory') && !req.get('x-opencode-directory');
-      const pendingSpaceBlocks = [];
-      const flushSpaceBlocks = async () => {
-        while (pendingSpaceBlocks.length > 0 && sseBoundary.isAtBoundary() && !abortController.signal.aborted) {
-          const canContinue = await enqueueSseWrite(pendingSpaceBlocks.shift());
+      const pendingSideBlocks = [];
+      const flushSideBlocks = async () => {
+        while (pendingSideBlocks.length > 0 && sseBoundary.isAtBoundary() && !abortController.signal.aborted) {
+          const canContinue = await enqueueSseWrite(pendingSideBlocks.shift());
           if (!canContinue) return false;
         }
         return true;
@@ -679,9 +719,18 @@ export const registerOpenCodeProxy = (app, deps) => {
       if (spaceEventHub && isGlobalStream) {
         unsubscribeSpaceEvents = spaceEventHub.subscribeEvent((event) => {
           if (event.spaceId === null) return;
-          pendingSpaceBlocks.push(`data: ${JSON.stringify(event.payload)}\n\n`);
-          void flushSpaceBlocks();
+          pendingSideBlocks.push(`data: ${JSON.stringify(event.payload)}\n\n`);
+          void flushSideBlocks();
         }, { spaces: true });
+      }
+      // A Claude session has no OpenCode upstream of its own: its frames are injected into
+      // the same hub and written here for as long as the response lives.
+      if (claudeEventHub && isClaudeSession) {
+        unsubscribeClaudeEvents = claudeEventHub.subscribeEvent((event) => {
+          if (isClaudeSession(event?.payload?.data?.sessionID) !== true) return;
+          pendingSideBlocks.push(`data: ${JSON.stringify(event.payload)}\n\n`);
+          void flushSideBlocks();
+        });
       }
 
       scheduleHeartbeat();
@@ -700,7 +749,7 @@ export const registerOpenCodeProxy = (app, deps) => {
           if (!canContinue) {
             break;
           }
-          if (!await flushSpaceBlocks()) {
+          if (!await flushSideBlocks()) {
             break;
           }
         }
@@ -723,6 +772,7 @@ export const registerOpenCodeProxy = (app, deps) => {
       }
     } finally {
       unsubscribeSpaceEvents?.();
+      unsubscribeClaudeEvents?.();
       if (heartbeatTimer) {
         clearTimeout(heartbeatTimer);
         heartbeatTimer = null;
@@ -813,7 +863,8 @@ export const registerOpenCodeProxy = (app, deps) => {
       const listQuery = new URL(upstreamPath, 'http://localhost').searchParams;
       const scopedToDirectory = Boolean(listQuery.get('directory') || req.get('x-opencode-directory'));
       const wantsSpaces = typeof mergeSpaceSessionList === 'function' && !listQuery.get('cursor') && !scopedToDirectory;
-      res.json(wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList);
+      const merged = wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList;
+      res.json(await mergeClaudeSessionsIntoList(merged, { listQuery, req }));
     } catch (error) {
       if (isAbortError(error)) {
         return;
@@ -832,6 +883,40 @@ export const registerOpenCodeProxy = (app, deps) => {
     ensureOpenCodeApiPrefix();
     next();
   });
+
+  // Claude Code sessions answer ahead of the readiness gate: a Claude request
+  // must never wait on an OpenCode restart it does not touch. The common
+  // middleware leaves `/api/session` bodies unparsed for the streaming proxy,
+  // so a request the Claude backend owns gets its JSON body parsed here;
+  // everything else stays untouched for OpenCode.
+  if (claudeRoutes) {
+    /**
+     * Whether the Claude backend owns this request: the create names it in the
+     * backend header, and every other route names a session the registry
+     * holds. Only these get their body parsed ahead of the router.
+     */
+    const isClaudeBackendRequest = (req) => {
+      if (!isClaudeSession) return false;
+      if (req.method === 'POST' && (req.path === '/session' || req.path === '/session/')) {
+        return String(req.get?.('x-openchamber-backend') ?? '').trim().toLowerCase() === 'claude';
+      }
+      const match = /^\/session\/([^/]+)/.exec(req.path);
+      if (!match) return false;
+      let sessionID = match[1];
+      try {
+        sessionID = decodeURIComponent(sessionID);
+      } catch {
+        // A malformed escape is not a session this registry minted.
+      }
+      return isClaudeSession(sessionID) === true;
+    };
+    const parseClaudeJsonBody = express.json({ limit: '50mb' });
+    app.use('/api', (req, res, next) => {
+      if (!isClaudeBackendRequest(req)) return next();
+      parseClaudeJsonBody(req, res, next);
+    });
+    app.use('/api', claudeRoutes);
+  }
 
   // Readiness gate — while OpenCode is starting/restarting, HOLD the request and
   // poll readiness instead of returning 503 immediately. A bare 503 pushes the

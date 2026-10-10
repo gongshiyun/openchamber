@@ -26,6 +26,13 @@ export const createServerUtilsRuntime = (dependencies) => {
     getMergeSpaceSessionList = null,
     getSpaceEventHub = null,
     getStoredSessionMetadata = null,
+    // Claude Code sessions: the route subset they serve, the list merge, and
+    // the hub whose Claude frames the global SSE stream carries. Absent means
+    // this server serves OpenCode alone, exactly as before.
+    claudeRoutes = null,
+    mergeClaudeSessionList = null,
+    claudeEventHub = null,
+    isClaudeSession = null,
   } = dependencies;
 
   const setOpenCodePort = (port) => {
@@ -199,6 +206,12 @@ export const createServerUtilsRuntime = (dependencies) => {
       // Read when the proxy is set up, after `main` decided whether the spaces host exists.
       mergeSpaceSessionList: typeof getMergeSpaceSessionList === 'function' ? getMergeSpaceSessionList() : null,
       spaceEventHub: typeof getSpaceEventHub === 'function' ? getSpaceEventHub() : null,
+      // The Claude Code backend's hooks into the proxy. Read at setup time,
+      // like the spaces ones; all null leaves the OpenCode proxy untouched.
+      claudeRoutes,
+      mergeClaudeSessionList,
+      claudeEventHub,
+      isClaudeSession,
     });
   };
 
