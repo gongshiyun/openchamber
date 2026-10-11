@@ -12,6 +12,12 @@
 // anything that addresses the message. A result or abort settles the turn;
 // later SDK messages map to nothing until the next `beginTurn()`.
 //
+// Tool calls stream as `session.tool.input.started` -> `.delta` -> `.ended`,
+// and the block's stop also publishes the call itself as `session.tool.called`
+// with the accumulated input JSON parsed into an object (`{}` when empty or
+// malformed), which is what the UI's running tool card reads.
+// `session.tool.progress` is not emitted.
+//
 // ---------------------------------------------------------------------------
 // SDK message shapes
 // ---------------------------------------------------------------------------
@@ -41,7 +47,7 @@
 // authoritative for text, reasoning and tool input; full `assistant` echoes
 // are ignored to avoid duplicating content.
 
-import { asNonEmptyString, isString } from '../shared/guards.js';
+import { asNonEmptyString, isPlainObject, isString } from '../shared/guards.js';
 import { createMessageId } from './ids.js';
 
 const PROVIDER_ID = 'claude-code';
@@ -93,6 +99,20 @@ const toolContent = (content) => {
     }
   }
   return items.length > 0 ? items : [{ type: 'text', text: '' }];
+};
+
+// A tool call's accumulated `input_json_delta` stream as the input object the
+// UI reads. The stream is empty for a tool that takes no input and can be
+// partial when the block is cut off, so anything that does not parse to a
+// plain object degrades to `{}` instead of failing the call.
+const parseToolInput = (json) => {
+  if (json.length === 0) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 };
 
 // SDK result -> SessionStructuredError ({ type, message }). The SDK puts a
@@ -225,7 +245,17 @@ export const createTranslator = ({
     if (block.kind === 'reasoning') {
       return [wire('session.reasoning.ended', { assistantMessageID, ordinal: block.ordinal, text: block.text })];
     }
-    return [wire('session.tool.input.ended', { assistantMessageID, id: block.id, text: block.json })];
+    // The call follows its input: `input.ended` carries the raw accumulated
+    // JSON for the stream, `called` the parsed input for the running card.
+    return [
+      wire('session.tool.input.ended', { assistantMessageID, id: block.id, text: block.json }),
+      wire('session.tool.called', {
+        assistantMessageID,
+        id: block.id,
+        input: parseToolInput(block.json),
+        executed: true,
+      }),
+    ];
   };
 
   const translateStreamEvent = (message) => {

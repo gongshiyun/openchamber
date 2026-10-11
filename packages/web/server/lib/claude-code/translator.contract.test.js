@@ -132,6 +132,7 @@ describe('Claude translator -> UI wire contract', () => {
         'session.text.delta',
         'session.text.ended',
         'session.text.started',
+        'session.tool.called',
         'session.tool.failed',
         'session.tool.input.delta',
         'session.tool.input.ended',

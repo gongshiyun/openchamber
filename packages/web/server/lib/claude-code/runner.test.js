@@ -598,6 +598,33 @@ describe('interrupt and failure', () => {
     await expect(runner.send({ text: 'after idle', messageID: 'msg_2' })).rejects.toThrow();
   });
 
+  test('a parked permission keeps the runner alive across idle windows and reaps after the reply', async () => {
+    const { runner, fake, spawns, emitted, idleCalls } = createHarness({ factory: { idleMs: 30 } });
+
+    await runner.send({ text: 'run tests', messageID: 'msg_1' });
+    const canUseTool = spawns[0].options.canUseTool;
+    const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+    await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+    const request = eventsOfType(emitted, 'permission.asked')[0];
+
+    // Two idle windows pass while the approval is parked: the runner must not
+    // settle the turn, dispose, or report to onIdle.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(idleCalls).toEqual([]);
+    expect(fake.calls.closes).toBe(0);
+    expect(eventsOfType(emitted, 'session.execution.interrupted')).toEqual([]);
+    expect(runner.isBusy()).toBe(true);
+
+    // The reply is activity; the next idle window reaps as before.
+    expect(runner.resolvePermission(request.data.id, 'once')).toBe(true);
+    expect(await answer).toEqual({ behavior: 'allow' });
+    await waitFor(() => idleCalls.length === 1);
+    expect(idleCalls[0]).toBe(runner);
+    expect(fake.calls.closes).toBe(1);
+    expect(runner.isBusy()).toBe(false);
+    expect(eventsOfType(emitted, 'session.execution.interrupted')[0].data.reason).toBe('idle');
+  });
+
   test('dispose is idempotent and closes the query once', async () => {
     const { runner, fake, emitted } = createHarness();
 

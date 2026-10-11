@@ -28,10 +28,12 @@
 // INTERRUPT_SETTLE_MS; when it does not, the runner settles the turn itself so
 // the session does not stay busy forever.
 //
-// Idle: the idle timer resets on send and on every SDK message. On fire the
-// runner settles an open turn as interrupted, disposes itself, and reports to
-// `onIdle` so the registry can drop it; the next prompt resumes the Claude
-// session through `resume`.
+// Idle: the idle timer resets on send, on every SDK message, and on permission
+// activity. On fire the runner settles an open turn as interrupted, disposes
+// itself, and reports to `onIdle` so the registry can drop it. A turn parked
+// on a permission request is waiting on the user, not idle: the fire resets
+// the window and keeps the runner alive instead. The next prompt resumes the
+// Claude session through `resume`.
 //
 // SDK facts assumed here, verified against @anthropic-ai/claude-agent-sdk
 // 0.3.296 types (re-verify when the dependency lands, Task 10/12):
@@ -412,6 +414,12 @@ export function createRunnerFactory({
     const handleIdle = async () => {
       idleTimer = null;
       if (state.disposed) return;
+      // A parked request is a turn waiting on the user, not an idle session:
+      // restart the window instead of settling and disposing under it.
+      if (pendingPermissions.size > 0) {
+        resetIdleTimer();
+        return;
+      }
       if (state.busy) settleTurnAsAborted('idle');
       await dispose();
       onIdle(runner);
@@ -493,6 +501,8 @@ export function createRunnerFactory({
         cleanup: () => options.signal?.removeEventListener?.('abort', onAbort),
       });
       options.signal?.addEventListener?.('abort', onAbort, { once: true });
+      // Parking is activity: the turn is waiting on the user's answer.
+      resetIdleTimer();
 
       emitEvent(
         wire('permission.asked', {
@@ -514,6 +524,8 @@ export function createRunnerFactory({
       if (decision !== 'once' && decision !== 'always' && decision !== 'reject') return false;
       pendingPermissions.delete(permissionID);
       entry.cleanup();
+      // Answering is activity too: the turn resumes with a fresh window.
+      resetIdleTimer();
       if (decision === 'always') alwaysAllowed.add(entry.toolName);
       emitEvent(wire('permission.replied', { requestID: permissionID, reply: decision }));
       entry.resolve(permissionResult(decision, entry.suggestions));

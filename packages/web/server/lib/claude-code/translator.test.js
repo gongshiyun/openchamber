@@ -188,12 +188,20 @@ describe('tool blocks', () => {
     translator.translate(blockDelta(2, { type: 'input_json_delta', partial_json: '"ls -la"}' }));
 
     const ended = translator.translate(blockStop(2));
-    expect(ended.map((event) => event.type)).toEqual(['session.tool.input.ended']);
+    expect(ended.map((event) => event.type)).toEqual(['session.tool.input.ended', 'session.tool.called']);
     expect(ended[0].data).toEqual({
       sessionID: SESSION_ID,
       assistantMessageID,
       id: 'toolu_1',
       text: '{"command":"ls -la"}',
+    });
+    expect(ended[1].created).toBe(CLOCK);
+    expect(ended[1].data).toEqual({
+      sessionID: SESSION_ID,
+      assistantMessageID,
+      id: 'toolu_1',
+      input: { command: 'ls -la' },
+      executed: true,
     });
 
     const settled = translator.translate(
@@ -207,6 +215,56 @@ describe('tool blocks', () => {
       content: [{ type: 'text', text: 'file-a.txt\nfile-b.txt' }],
       executed: true,
     });
+  });
+
+  test('emits called with an empty input object when the input stream is empty', () => {
+    const translator = createTestTranslator();
+    translator.beginTurn();
+    const started = translator.translate(blockStart(0, { type: 'tool_use', id: 'toolu_4', name: 'Bash' }));
+    const assistantMessageID = assistantMessageIDOf(started);
+
+    const ended = translator.translate(blockStop(0));
+
+    expect(ended.map((event) => event.type)).toEqual(['session.tool.input.ended', 'session.tool.called']);
+    expect(ended[0].data.text).toBe('');
+    expect(ended[1].data).toEqual({
+      sessionID: SESSION_ID,
+      assistantMessageID,
+      id: 'toolu_4',
+      input: {},
+      executed: true,
+    });
+  });
+
+  test('emits called with an empty input object when the input stream is malformed', () => {
+    const translator = createTestTranslator();
+    translator.beginTurn();
+    const started = translator.translate(blockStart(0, { type: 'tool_use', id: 'toolu_5', name: 'Bash' }));
+    const assistantMessageID = assistantMessageIDOf(started);
+    translator.translate(blockDelta(0, { type: 'input_json_delta', partial_json: '{"command":' }));
+
+    const ended = translator.translate(blockStop(0));
+
+    // The raw stream still reaches input.ended unchanged.
+    expect(ended[0].data.text).toBe('{"command":');
+    expect(ended[1].data).toEqual({
+      sessionID: SESSION_ID,
+      assistantMessageID,
+      id: 'toolu_5',
+      input: {},
+      executed: true,
+    });
+  });
+
+  test('emits called with an empty input object when the input stream is not an object', () => {
+    const translator = createTestTranslator();
+    translator.beginTurn();
+    translator.translate(blockStart(0, { type: 'tool_use', id: 'toolu_6', name: 'Bash' }));
+    translator.translate(blockDelta(0, { type: 'input_json_delta', partial_json: '"ls -la"' }));
+
+    const ended = translator.translate(blockStop(0));
+
+    expect(ended[1].data.input).toEqual({});
   });
 
   test('maps a failed tool_result to session.tool.failed with the extracted message', () => {
