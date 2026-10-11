@@ -170,13 +170,13 @@ describe('claude code runtime', () => {
       }).expect(200);
 
       const info = response.body.data;
-      expect(info.location).toEqual({ directory: 'C:\\work\\app' });
+      expect(info.location).toEqual({ directory: 'C:/work/app' });
       // The wire record goes through the UI's own projection, exactly as the
       // client does on `session.create` / `session.get`.
       const session = projectSession(info);
       expect(session.id).toBe('ses_claude_1');
       expect(session.projectID).toBe(uiProjectIdFromPath('C:\\work\\app'));
-      expect(session.directory).toBe('C:\\work\\app');
+      expect(session.directory).toBe('C:/work/app');
       expect(session.title).toBe('Fix the tests');
       expect(session.cost).toBe(0);
       expect(session.tokens).toEqual(ZERO_TOKENS);
@@ -189,17 +189,17 @@ describe('claude code runtime', () => {
       expect(created).toHaveLength(1);
       expect(created[0].id).toMatch(/^msg_/);
       expect(created[0].created).toBe(CLOCK);
-      expect(created[0].location).toEqual({ directory: 'C:\\work\\app' });
+      expect(created[0].location).toEqual({ directory: 'C:/work/app' });
       expect(created[0].data).toEqual({
         sessionID: 'ses_claude_1',
         projectID: uiProjectIdFromPath('C:\\work\\app'),
-        location: { directory: 'C:\\work\\app' },
+        location: { directory: 'C:/work/app' },
         title: 'Fix the tests',
         model: { providerID: 'claude-code', id: 'opus' },
         metadata: { pinned: true, openchamber: { backend: 'claude' } },
       });
       expect(hub.events).toEqual([
-        { payload: created[0], directory: 'C:\\work\\app', spaceId: null },
+        { payload: created[0], directory: 'C:/work/app', spaceId: null },
       ]);
 
       // The registry owns the session from the moment it exists.
@@ -207,7 +207,7 @@ describe('claude code runtime', () => {
       expect(runtime.isClaudeSession('ses_opencode_1')).toBe(false);
       expect(await fileExists(indexPath())).toBe(true);
       expect((await readIndex()).ses_claude_1).toMatchObject({
-        directory: 'C:\\work\\app',
+        directory: 'C:/work/app',
         projectID: uiProjectIdFromPath('C:\\work\\app'),
         title: 'Fix the tests',
         createdAt: CLOCK,
@@ -266,7 +266,7 @@ describe('claude code runtime', () => {
       first.runners.sessions[0].onSessionId('claude-uuid-1');
       await waitFor(async () => (await readIndex()).ses_keep_1.claudeSessionUuid === 'claude-uuid-1');
       expect((await readIndex()).ses_keep_1).toEqual({
-        directory: 'C:\\work\\keep',
+        directory: 'C:/work/keep',
         projectID: uiProjectIdFromPath('C:\\work\\keep'),
         title: 'Kept',
         createdAt: CLOCK,
@@ -287,7 +287,7 @@ describe('claude code runtime', () => {
       expect(projectSession(info)).toMatchObject({
         id: 'ses_keep_1',
         projectID: uiProjectIdFromPath('C:\\work\\keep'),
-        directory: 'C:\\work\\keep',
+        directory: 'C:/work/keep',
         title: 'Kept',
         agent: 'build',
         model: { providerID: 'claude-code', id: 'sonnet' },
@@ -349,7 +349,7 @@ describe('claude code runtime', () => {
         expect.objectContaining({
           created: CLOCK + 1000,
           data: { sessionID: 'ses_move_1', title: 'Renamed' },
-          location: { directory: 'C:\\work\\one' },
+          location: { directory: 'C:/work/one' },
         }),
       ]);
       expect((await readIndex()).ses_move_1).toMatchObject({ title: 'Renamed', updatedAt: CLOCK + 1000 });
@@ -360,15 +360,15 @@ describe('claude code runtime', () => {
       expect(moved).toHaveLength(1);
       expect(moved[0].data).toEqual({
         sessionID: 'ses_move_1',
-        location: { directory: 'C:\\work\\two' },
+        location: { directory: 'C:/work/two' },
         projectID: uiProjectIdFromPath('C:\\work\\two'),
       });
       const after = (await request(app).get('/api/session/ses_move_1').expect(200)).body.data;
-      expect(after.location).toEqual({ directory: 'C:\\work\\two' });
+      expect(after.location).toEqual({ directory: 'C:/work/two' });
       expect(after.projectID).toBe(uiProjectIdFromPath('C:\\work\\two'));
       expect(after.time.updated).toBe(CLOCK + 2000);
       expect((await readIndex()).ses_move_1).toMatchObject({
-        directory: 'C:\\work\\two',
+        directory: 'C:/work/two',
         projectID: uiProjectIdFromPath('C:\\work\\two'),
       });
 
@@ -399,7 +399,7 @@ describe('claude code runtime', () => {
 
       const listed = runtime.listSessionsForProxy({ directory: 'C:\\work\\a' });
       expect(listed.map((record) => record.id)).toEqual(['ses_l_2', 'ses_l_1']);
-      expect(listed[0].location).toEqual({ directory: 'C:\\work\\a' });
+      expect(listed[0].location).toEqual({ directory: 'C:/work/a' });
       expect(runtime.listSessionsForProxy({ directory: 'C:\\work\\a', search: 'FIX' }).map((record) => record.id))
         .toEqual(['ses_l_1']);
       expect(runtime.listSessionsForProxy({ directory: 'C:\\work\\a', limit: 1 }).map((record) => record.id))
@@ -407,6 +407,110 @@ describe('claude code runtime', () => {
       expect(runtime.listSessionsForProxy({}).map((record) => record.id))
         .toEqual(['ses_l_3', 'ses_l_2', 'ses_l_1']);
       expect(runtime.listSessionsForProxy({ directory: 'C:\\work\\missing' })).toEqual([]);
+    });
+
+    test('stores the canonical directory form and matches either separator spelling', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      const response = await createSession(app, {
+        id: 'ses_dir_1',
+        location: { directory: 'D:\\X\\Y\\' },
+      }).expect(200);
+
+      expect(response.body.data.location).toEqual({ directory: 'D:/X/Y' });
+      const created = hub.ofType('session.created')[0];
+      expect(created.location).toEqual({ directory: 'D:/X/Y' });
+      expect(created.data.location).toEqual({ directory: 'D:/X/Y' });
+      expect((await readIndex()).ses_dir_1.directory).toBe('D:/X/Y');
+
+      // The proxy canonicalizes the query directory with a realpath, which on
+      // Windows yields backslashes; the record must match either spelling.
+      expect(runtime.listSessionsForProxy({ directory: 'D:/X/Y' }).map((record) => record.id)).toEqual(['ses_dir_1']);
+      expect(runtime.listSessionsForProxy({ directory: 'D:\\X\\Y' }).map((record) => record.id)).toEqual(['ses_dir_1']);
+      expect(runtime.listSessionsForProxy({ directory: 'd:\\X\\Y\\' }).map((record) => record.id)).toEqual(['ses_dir_1']);
+      expect(runtime.listSessionsForProxy({ directory: 'D:/X/Z' })).toEqual([]);
+    });
+
+    test('heals a legacy backslash directory in the stored index on load and persists it', async () => {
+      await fs.mkdir(path.dirname(indexPath()), { recursive: true });
+      await fs.writeFile(indexPath(), JSON.stringify({
+        ses_dir_legacy: {
+          directory: 'D:\\X\\Y',
+          title: 'Legacy',
+          createdAt: 1,
+          updatedAt: 1,
+          model: { providerID: 'claude-code', id: 'opus' },
+          claudeSessionUuid: null,
+          metadata: {},
+        },
+      }), 'utf8');
+
+      const { runtime } = createRuntime();
+      await runtime.start();
+
+      // The healed directory is on disk, so the next boot starts canonical.
+      expect((await readIndex()).ses_dir_legacy.directory).toBe('D:/X/Y');
+      expect(runtime.listSessionsForProxy({ directory: 'D:\\X\\Y' }).map((record) => record.id))
+        .toEqual(['ses_dir_legacy']);
+    });
+
+    test('falls back to the default alias when a create names a foreign model', async () => {
+      const { runtime } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      const foreign = await createSession(app, {
+        id: 'ses_model_foreign',
+        model: { providerID: 'zen', id: 'big-pickle' },
+        location: { directory: 'C:\\work\\model' },
+      }).expect(200);
+      expect(foreign.body.data.model).toEqual({ providerID: 'claude-code', id: 'opus' });
+      expect((await readIndex()).ses_model_foreign.model).toEqual({ providerID: 'claude-code', id: 'opus' });
+
+      // A known alias keeps its variant; the provider alone is not enough.
+      const aliased = await createSession(app, {
+        id: 'ses_model_alias',
+        model: { providerID: 'claude-code', id: 'haiku', variant: 'fast' },
+        location: { directory: 'C:\\work\\model' },
+      }).expect(200);
+      expect(aliased.body.data.model).toEqual({ providerID: 'claude-code', id: 'haiku', variant: 'fast' });
+
+      const unknown = await createSession(app, {
+        id: 'ses_model_unknown',
+        model: { providerID: 'claude-code', id: 'big-pickle' },
+        location: { directory: 'C:\\work\\model' },
+      }).expect(200);
+      expect(unknown.body.data.model).toEqual({ providerID: 'claude-code', id: 'opus' });
+    });
+
+    test('heals a stored foreign model on load and gives the runner the healed alias', async () => {
+      await fs.mkdir(path.dirname(indexPath()), { recursive: true });
+      await fs.writeFile(indexPath(), JSON.stringify({
+        ses_model_legacy: {
+          directory: 'C:\\work\\legacy',
+          title: 'Legacy',
+          createdAt: 1,
+          updatedAt: 1,
+          model: { providerID: 'claude-code', id: 'big-pickle' },
+          claudeSessionUuid: null,
+          metadata: {},
+        },
+      }), 'utf8');
+
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+
+      // The healed model is on disk, so the next boot starts canonical.
+      expect((await readIndex()).ses_model_legacy.model).toEqual({ providerID: 'claude-code', id: 'opus' });
+
+      const app = createApp(runtime);
+      await request(app)
+        .post('/api/session/ses_model_legacy/prompt')
+        .send({ id: 'msg_legacy_1', text: 'Hello' })
+        .expect(200);
+      expect(runners.sessions[0].model).toBe('opus');
     });
 
     test('records an agent switch and emits it only when it changes', async () => {
@@ -554,7 +658,7 @@ describe('claude code runtime', () => {
           id: 'evt_ctx_1',
           created: CLOCK,
           data: { sessionID: 'ses_ctx_1', text: 'The failing test', description: 'Quoted selection', metadata },
-          location: { directory: 'C:\\work\\ctx' },
+          location: { directory: 'C:/work/ctx' },
         }),
       ]);
       expect(messageIdFromEvent(emitted[0].id)).toBe('msg_ctx_1');
@@ -614,8 +718,8 @@ describe('claude code runtime', () => {
       expect(runners.runners).toHaveLength(1);
       expect(runners.sessions[0]).toMatchObject({
         sessionID: 'ses_prompt_1',
-        directory: 'C:\\work\\prompt',
-        cwd: 'C:\\work\\prompt',
+        directory: 'C:/work/prompt',
+        cwd: 'C:/work/prompt',
         model: 'opus',
         claudeSessionUuid: null,
         cliPath: 'C:\\fake\\claude.exe',
@@ -685,7 +789,7 @@ describe('claude code runtime', () => {
             model: { providerID: 'claude-code', id: 'sonnet' },
             previous: { providerID: 'claude-code', id: 'opus' },
           },
-          location: { directory: 'C:\\work\\model' },
+          location: { directory: 'C:/work/model' },
         }),
       ]);
       const info = (await request(app).get('/api/session/ses_model_1').expect(200)).body.data;
@@ -693,15 +797,35 @@ describe('claude code runtime', () => {
       expect(info.time.updated).toBe(CLOCK + 1000);
       expect((await readIndex()).ses_model_1.model).toEqual({ providerID: 'claude-code', id: 'sonnet' });
 
-      // A selection from another provider is recorded but never reaches the
-      // Claude process, whose model alias it does not name.
+      // A selection from another provider, or an unknown alias, is ignored:
+      // the record keeps the last valid alias, the live runner is not asked,
+      // and nothing is emitted.
+      clock.advance();
       await request(app)
         .post('/api/session/ses_model_1/model')
         .send({ model: { providerID: 'openchamber', id: 'auto' } })
         .expect(204);
+      await request(app)
+        .post('/api/session/ses_model_1/model')
+        .send({ model: { providerID: 'claude-code', id: 'big-pickle' } })
+        .expect(204);
       expect(runner.models).toEqual(['sonnet']);
+      expect(hub.ofType('session.model.selected')).toHaveLength(1);
       expect((await request(app).get('/api/session/ses_model_1').expect(200)).body.data.model)
-        .toEqual({ providerID: 'claude-code', id: 'auto' });
+        .toEqual({ providerID: 'claude-code', id: 'sonnet' });
+      expect((await readIndex()).ses_model_1.model).toEqual({ providerID: 'claude-code', id: 'sonnet' });
+      expect((await readIndex()).ses_model_1.updatedAt).toBe(CLOCK + 1000);
+
+      // A switch to another known alias still lands, runner included.
+      clock.advance();
+      await request(app)
+        .post('/api/session/ses_model_1/model')
+        .send({ model: { providerID: 'claude-code', id: 'haiku' } })
+        .expect(204);
+      expect(runner.models).toEqual(['sonnet', 'haiku']);
+      expect(hub.ofType('session.model.selected')).toHaveLength(2);
+      expect((await readIndex()).ses_model_1.model).toEqual({ providerID: 'claude-code', id: 'haiku' });
+      expect((await readIndex()).ses_model_1.updatedAt).toBe(CLOCK + 3000);
     });
 
     test('derives the title from the first prompt text and emits session.renamed once', async () => {
@@ -721,7 +845,7 @@ describe('claude code runtime', () => {
         expect.objectContaining({
           created: CLOCK + 1000,
           data: { sessionID: 'ses_title_1', title: 'Fix the parser' },
-          location: { directory: 'C:\\work\\title' },
+          location: { directory: 'C:/work/title' },
         }),
       ]);
       expect((await readIndex()).ses_title_1).toMatchObject({ title: 'Fix the parser', updatedAt: CLOCK + 1000 });
@@ -804,7 +928,7 @@ describe('claude code runtime', () => {
       expect(hub.ofType('session.metadata.updated')).toEqual([
         expect.objectContaining({
           data: { sessionID: 'ses_meta_1', metadata: merged },
-          location: { directory: 'C:\\work\\meta' },
+          location: { directory: 'C:/work/meta' },
         }),
       ]);
       expect((await readIndex()).ses_meta_1.metadata).toEqual(merged);
@@ -839,7 +963,7 @@ describe('claude code runtime', () => {
         expect(projectSession(session)).toMatchObject({
           id: 'ses_e2e_1',
           projectID: uiProjectIdFromPath('C:\\work\\e2e'),
-          directory: 'C:\\work\\e2e',
+          directory: 'C:/work/e2e',
           title: 'End to end',
           cost: 0,
           tokens: ZERO_TOKENS,

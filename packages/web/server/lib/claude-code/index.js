@@ -32,6 +32,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { mergeMetadataPatch } from '../openchamber-sessions/session-metadata-store.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
@@ -45,19 +46,60 @@ import { createTranslator } from './translator.js';
 
 const BACKEND = 'claude';
 const PROVIDER_ID = 'claude-code';
-const DEFAULT_MODEL_ID = 'opus';
+// The model aliases this backend accepts, in picker order. Mirrors the UI's
+// static list (`CLAUDE_MODEL_ALIASES` in packages/ui/src/lib/sessionBackend.ts);
+// the plain-JS server cannot import from packages/ui, so keep the two in sync.
+const CLAUDE_MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+const DEFAULT_CLAUDE_MODEL = 'opus';
 // A fresh session has no usage yet; `session.created` carries the zeroes the
 // UI's `Session` requires (cost and tokens are non-optional there).
 const ZERO_TOKENS = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
 // Session ids name transcript files, so an id that could escape the sessions
 // directory (or name a file Windows rejects) is refused at the door.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+// A Windows drive root keeps its slash: `C:/` is absolute, `C:` is
+// drive-relative. Mirrors the UI's own pattern in `pathNormalization.ts`.
+const WINDOWS_DRIVE_ROOT = /^(?:\/\/\?\/)?[A-Za-z]:\/+$/u;
 
-/** A stored model selection: this backend's provider id plus the alias. */
-const modelRefOf = (model, fallbackId) => {
-  const id = isString(model?.id) && model.id !== '' ? model.id : fallbackId;
-  const ref = { providerID: PROVIDER_ID, id };
-  if (isString(model?.variant) && model.variant !== '') ref.variant = model.variant;
+/**
+ * A directory in the canonical form every OpenChamber surface compares:
+ * trimmed, backslashes replaced with forward slashes, a lowercase drive
+ * letter uppercased, and a trailing slash dropped (a root keeps its slash).
+ * Mirrors `normalizePath` in packages/ui/src/lib/pathNormalization.ts: the
+ * shared UI normalizes every directory this way, while the proxy's realpath
+ * canonicalization yields backslashes on Windows, so the registry must store
+ * and compare this form or a session never matches its own directory list.
+ * Returns `null` for a value that names no directory (non-string, empty,
+ * whitespace-only, or only slashes).
+ */
+const normalizeClaudeDirectory = (value) => {
+  if (!isString(value)) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const replaced = trimmed
+    .replace(/\\/g, '/')
+    .replace(/^([a-z]):/, (_, letter) => `${letter.toUpperCase()}:`);
+  if (replaced === '/') return '/';
+  if (WINDOWS_DRIVE_ROOT.test(replaced)) return replaced.replace(/\/+$/u, '/');
+  const stripped = replaced.length > 1 ? replaced.replace(/\/+$/, '') : replaced;
+  return stripped || null;
+};
+
+/** True when the value names one of the Claude model aliases the UI offers. */
+const isClaudeModelAlias = (value) => CLAUDE_MODEL_ALIASES.includes(value);
+
+/**
+ * The stored model selection: this backend's provider id plus a known alias.
+ * Anything else — another provider, an unknown id — falls back to the default
+ * alias, because a foreign id poisons the record and every later turn would
+ * fail on a model the Claude CLI cannot resolve.
+ */
+const modelRefOf = (model) => {
+  if (!isPlainObject(model) || model.providerID !== PROVIDER_ID || !isClaudeModelAlias(model.id)) {
+    return { providerID: PROVIDER_ID, id: DEFAULT_CLAUDE_MODEL };
+  }
+  const ref = { providerID: PROVIDER_ID, id: model.id };
+  if (isString(model.variant) && model.variant !== '') ref.variant = model.variant;
   return ref;
 };
 
@@ -217,10 +259,11 @@ export function createClaudeCodeRuntime({
    * One persisted entry as a record. `directory` is authoritative, so
    * `projectID` is derived from it rather than trusted from the file; a field
    * that no longer has the right type falls back to its default instead of
-   * poisoning every later read.
+   * poisoning every later read. The directory and the model are healed to
+   * their canonical forms here, so a legacy record reads like a fresh one.
    */
   const recordFromStored = (sessionID, value) => {
-    const directory = isString(value.directory) ? value.directory : '';
+    const directory = normalizeClaudeDirectory(value.directory) ?? '';
     const record = {
       id: sessionID,
       directory,
@@ -228,7 +271,7 @@ export function createClaudeCodeRuntime({
       title: isString(value.title) ? value.title : '',
       createdAt: numberOr(value.createdAt, 0),
       updatedAt: numberOr(value.updatedAt, 0),
-      model: modelRefOf(value.model, DEFAULT_MODEL_ID),
+      model: modelRefOf(value.model),
       claudeSessionUuid: isString(value.claudeSessionUuid) ? value.claudeSessionUuid : null,
       metadata: isPlainObject(value.metadata) ? value.metadata : {},
     };
@@ -239,7 +282,9 @@ export function createClaudeCodeRuntime({
   /**
    * Loads the persisted index. A missing file is an empty registry; an
    * unreadable one throws, because starting empty would silently forget every
-   * session and the next write would then overwrite the file.
+   * session and the next write would then overwrite the file. A record the
+   * load healed (a legacy directory spelling, a foreign model) makes the
+   * canonical index be written back, so the file and the memory agree.
    */
   const start = async () => {
     let raw;
@@ -259,14 +304,20 @@ export function createClaudeCodeRuntime({
       throw new Error(`Claude session index at ${indexPath} is not a JSON object`);
     }
     const loaded = new Map();
+    let healed = false;
     for (const [sessionID, value] of Object.entries(parsed)) {
       // An id that could not have been created here (it would escape the
       // sessions directory) is not a session this runtime serves.
       if (!SESSION_ID_PATTERN.test(sessionID) || !isPlainObject(value)) continue;
-      loaded.set(sessionID, recordFromStored(sessionID, value));
+      const record = recordFromStored(sessionID, value);
+      loaded.set(sessionID, record);
+      // The stored form a load writes back is the runtime's own; any entry
+      // that differs from it was healed above and needs the rewrite.
+      if (!isDeepStrictEqual(storedOf(record), value)) healed = true;
     }
     records.clear();
     for (const [sessionID, record] of loaded) records.set(sessionID, record);
+    if (healed) await persistIndex();
   };
 
   // -------------------------------------------------------------------------
@@ -310,7 +361,7 @@ export function createClaudeCodeRuntime({
     }
     if (records.has(sessionID)) throw new Error(`Claude session ${sessionID} already exists`);
 
-    const directory = isString(input.directory) ? input.directory : '';
+    const directory = normalizeClaudeDirectory(input.directory) ?? '';
     const createdAt = now();
     const record = {
       id: sessionID,
@@ -319,7 +370,7 @@ export function createClaudeCodeRuntime({
       title: isString(input.title) ? input.title : '',
       createdAt,
       updatedAt: createdAt,
-      model: modelRefOf(input.model, DEFAULT_MODEL_ID),
+      model: modelRefOf(input.model),
       claudeSessionUuid: null,
       metadata: withBackendMetadata(input.metadata),
     };
@@ -329,14 +380,14 @@ export function createClaudeCodeRuntime({
     const created = {
       sessionID,
       projectID: record.projectID,
-      location: { directory },
+      location: { directory: record.directory },
       title: record.title,
       model: record.model,
       metadata: record.metadata,
     };
     if (record.agent !== undefined) created.agent = record.agent;
     emitWire(
-      wireEvent('session.created', created, directory),
+      wireEvent('session.created', created, record.directory),
       record,
     );
     return wireRecord(record);
@@ -353,15 +404,16 @@ export function createClaudeCodeRuntime({
 
   const moveSession = async (sessionID, directory) => {
     const record = requireRecord(sessionID);
-    if (!isString(directory) || directory === '') {
+    const normalized = normalizeClaudeDirectory(directory);
+    if (normalized === null) {
       throw new TypeError('a directory is required to move a Claude session');
     }
-    record.directory = directory;
-    record.projectID = createProjectIdFromPath(directory);
+    record.directory = normalized;
+    record.projectID = createProjectIdFromPath(normalized);
     record.updatedAt = now();
     await persistIndex();
     emitWire(
-      wireEvent('session.moved', { sessionID, location: { directory }, projectID: record.projectID }, directory),
+      wireEvent('session.moved', { sessionID, location: { directory: normalized }, projectID: record.projectID }, normalized),
       record,
     );
   };
@@ -396,21 +448,24 @@ export function createClaudeCodeRuntime({
 
   const switchModel = async (sessionID, model) => {
     const record = requireRecord(sessionID);
-    if (!isString(model?.id) || model.id === '') {
-      throw new TypeError('a model with an id is required to switch a Claude session');
+    // Only this backend's own aliases are switchable: a foreign provider or an
+    // unknown id would poison the record and every later turn would fail on a
+    // model the Claude CLI cannot resolve. The selection is ignored (the route
+    // still answers 204), so the record keeps the last valid alias.
+    if (!isPlainObject(model) || model.providerID !== PROVIDER_ID || !isClaudeModelAlias(model.id)) {
+      console.warn(`[claude-code] ignored a model switch for ${sessionID}: only ${PROVIDER_ID} aliases (${CLAUDE_MODEL_ALIASES.join(', ')}) are accepted`);
+      return;
     }
     const previous = { ...record.model };
-    const next = modelRefOf(model, record.model.id);
+    const next = modelRefOf(model);
     record.model = next;
     record.updatedAt = now();
     await persistIndex();
-    if (model.providerID === PROVIDER_ID) {
-      const runner = runners.get(sessionID)?.runner;
-      // The live process is an optimization: the runner stores the alias
-      // before it tells the SDK, so a control-call failure still leaves the
-      // next turn on the new model.
-      if (runner) await runner.setModel(next.id).catch(() => {});
-    }
+    const runner = runners.get(sessionID)?.runner;
+    // The live process is an optimization: the runner stores the alias
+    // before it tells the SDK, so a control-call failure still leaves the
+    // next turn on the new model.
+    if (runner) await runner.setModel(next.id).catch(() => {});
     emitWire(wireEvent('session.model.selected', { sessionID, model: next, previous }, record.directory), record);
   };
 
@@ -427,15 +482,19 @@ export function createClaudeCodeRuntime({
   /**
    * The records the proxy's `GET /api/session` merge appends: wire records of
    * one directory (every directory when none is named), newest first by id,
-   * filtered by a case-insensitive title substring and cut to `limit`.
+   * filtered by a case-insensitive title substring and cut to `limit`. The
+   * query directory arrives as the proxy canonicalized it (a realpath, so
+   * backslashes on Windows) while records are stored canonically, so both
+   * sides are compared in the UI's canonical form.
    */
   const listSessionsForProxy = ({ directory, limit, search } = {}) => {
-    const scoped = isString(directory) && directory !== '';
+    const normalized = normalizeClaudeDirectory(directory);
+    const scoped = normalized !== null;
     const needle = isString(search) && search !== '' ? search.toLowerCase() : null;
     const size = Number.isInteger(limit) && limit > 0 ? limit : null;
     const matching = [];
     for (const record of records.values()) {
-      if (scoped && record.directory !== directory) continue;
+      if (scoped && normalizeClaudeDirectory(record.directory) !== normalized) continue;
       if (needle && !record.title.toLowerCase().includes(needle)) continue;
       matching.push(record);
     }
@@ -514,6 +573,12 @@ export function createClaudeCodeRuntime({
     entry.promise = (async () => {
       const transcript = await transcriptFor(record);
       const cliPath = await resolveCli();
+      // The model is canonicalized on every write and on load; healing once
+      // more keeps the runner on an alias even if a record ever drifted.
+      const model = modelRefOf(record.model);
+      if (model.providerID !== record.model?.providerID || model.id !== record.model?.id) {
+        record.model = model;
+      }
       const runner = runnerFactory.createRunner({
         sessionID: record.id,
         directory: record.directory,
