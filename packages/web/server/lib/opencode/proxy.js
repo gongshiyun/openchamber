@@ -318,12 +318,13 @@ export const registerOpenCodeProxy = (app, deps) => {
     spaceEventHub = null,
     // Claude Code sessions: the route subset they serve (mounted ahead of the
     // readiness gate), the list merge that appends their records, the active
-    // snapshot merge, and the hub whose Claude frames the global SSE stream
-    // carries. All absent means this server serves OpenCode alone, exactly as
-    // before.
+    // snapshot merge, the pending-permission merge, and the hub whose Claude
+    // frames the global SSE stream carries. All absent means this server
+    // serves OpenCode alone, exactly as before.
     claudeRoutes = null,
     mergeClaudeSessionList = null,
     getClaudeActiveSessions = null,
+    getClaudePendingPermissions = null,
     claudeEventHub = null,
     isClaudeSession = null,
   } = deps;
@@ -1093,6 +1094,92 @@ export const registerOpenCodeProxy = (app, deps) => {
       } catch (error) {
         if (isAbortError(error)) return;
         console.error('[proxy] OpenCode session.active proxy error:', error?.message ?? error);
+        if (!res.headersSent) {
+          res.status(503).json({ error: 'OpenCode service unavailable' });
+          return;
+        }
+        next(error);
+      }
+    });
+  }
+
+  // The Claude backend's parked permission requests join the pending list the
+  // UI reads on session switch and reconnect (`GET /api/permission/request`).
+  // Only registered with the backend wired: an OpenCode-only server keeps the
+  // route on the generic proxy, exactly as before.
+  if (getClaudePendingPermissions instanceof Function) {
+    // The UI's scoped SDK client URI-encodes the directory header on every
+    // request and OpenCode decodes the value once on its side, so read it the
+    // way OpenCode will (same reading as `directoryOf` in ../routing/routes.js).
+    // The proxy's header normalization already consumed the
+    // `x-opencode-directory-encoding: uri` marker, so a value that still
+    // carries percent escapes is the SDK's one encoded layer.
+    const decodeDirectoryHeader = (value) => {
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    };
+
+    /**
+     * The parked Claude requests of one directory, or `null` when the backend
+     * cannot answer or has none. A backend failure leaves the upstream list
+     * alone rather than answering a partial one.
+     */
+    const readClaudePendingPermissions = async (directory) => {
+      try {
+        const requests = await getClaudePendingPermissions(directory);
+        return Array.isArray(requests) && requests.length > 0 ? requests : null;
+      } catch (error) {
+        console.warn('[proxy] Claude pending permissions unavailable:', error?.message ?? error);
+        return null;
+      }
+    };
+
+    /**
+     * The upstream `{ location, data: Permission.Request[] }` body with the
+     * Claude parked requests appended, keeping the envelope upstream used.
+     * `null` means the payload is not the documented shape, so it goes back
+     * untouched.
+     */
+    const withClaudePendingPermissions = (payload, claudePending) => {
+      if (!isPlainObject(payload) || !('data' in payload)) return null;
+      const data = unwrapOpenCodeResponse(payload);
+      if (!Array.isArray(data)) return null;
+      return { ...payload, data: [...data, ...claudePending] };
+    };
+
+    app.get('/api/permission/request', async (req, res, next) => {
+      try {
+        const upstreamPath = await getRequestUpstreamPath(req);
+        const result = await fetchSessionListPayload(upstreamPath, { req });
+
+        res.status(result.upstream.status);
+        applyForwardProxyResponseHeaders(result.upstream.headers, res);
+        res.setHeader('content-type', result.contentType);
+
+        // The read's directory: the SDK's `location` query
+        // (`location[directory]`, already percent-decoded by the URL parser),
+        // else the scoped client's directory header.
+        const query = new URL(upstreamPath, 'http://localhost').searchParams;
+        const header = req.get('x-opencode-directory');
+        const directory = query.get('location[directory]') ?? (header ? decodeDirectoryHeader(header) : undefined);
+
+        // The Claude list is read only for a body the host really answered: a
+        // failed host read must never come back as the Claude list alone.
+        const claudePending = result.upstream.ok && result.isJson && !result.parseError
+          ? await readClaudePendingPermissions(directory)
+          : null;
+        const merged = claudePending ? withClaudePendingPermissions(result.payload, claudePending) : null;
+        if (!merged) {
+          res.end(result.bodyText);
+          return;
+        }
+        res.json(merged);
+      } catch (error) {
+        if (isAbortError(error)) return;
+        console.error('[proxy] OpenCode permission.request proxy error:', error?.message ?? error);
         if (!res.headersSent) {
           res.status(503).json({ error: 'OpenCode service unavailable' });
           return;

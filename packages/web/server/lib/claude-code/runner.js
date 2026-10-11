@@ -24,6 +24,9 @@
 // session answers with a deny so no call stays parked; a call that stays
 // unanswered for `permissionParkMaxMs` is denied with "Permission request
 // timed out" and reported, so a forgotten prompt cannot park the turn forever.
+// Each parked request is kept in the wire shape so a client that reloads while
+// it waits can find it again (`pendingPermissionRequests`), and it leaves the
+// map the moment the request settles.
 // The session's mode travels in `options.permissionMode` (the registry reads
 // it from the record) and a live query can be switched with
 // `setPermissionMode`; `options.effort` is read when the runner is created.
@@ -673,6 +676,18 @@ export function createRunnerFactory({
             id: options.toolUseID ?? permissionID,
           }
         : undefined;
+      // The request in the wire shape `permission.asked` carries and
+      // `GET /api/permission/request` serves: kept on the pending entry so a
+      // client that reloads while the request is parked can find it again.
+      const wireRequest = {
+        sessionID,
+        id: permissionID,
+        action: toolName,
+        resources,
+        message: permissionMessage(toolName, resources, options.title),
+        metadata: { toolName, input },
+        source,
+      };
 
       let resolveRequest = null;
       const request = new Promise((resolve) => {
@@ -710,6 +725,7 @@ export function createRunnerFactory({
       pendingPermissions.set(permissionID, {
         toolName,
         suggestions: options.suggestions,
+        wireRequest,
         resolve: resolveRequest,
         cleanup: () => {
           options.signal?.removeEventListener?.('abort', onAbort);
@@ -722,16 +738,7 @@ export function createRunnerFactory({
       // Parking is activity: the turn is waiting on the user's answer.
       resetIdleTimer();
 
-      emitEvent(
-        wire('permission.asked', {
-          id: permissionID,
-          action: toolName,
-          resources,
-          message: permissionMessage(toolName, resources, options.title),
-          metadata: { toolName, input },
-          source,
-        }),
-      );
+      emitEvent(wire('permission.asked', wireRequest));
 
       return request;
     };
@@ -749,6 +756,15 @@ export function createRunnerFactory({
       entry.resolve(permissionResult(decision, entry.suggestions));
       return true;
     };
+
+    /**
+     * The parked requests in the wire shape `permission.asked` emitted
+     * (`Permission.Request`), for a client that reloads and must find them
+     * again (`GET /api/permission/request`). Empty when nothing is parked; an
+     * answered, aborted, timed-out, or disposed request leaves the map, so the
+     * list shrinks as requests settle.
+     */
+    const pendingPermissionRequests = () => [...pendingPermissions.values()].map((entry) => entry.wireRequest);
 
     const dispose = async () => {
       if (state.disposed) return;
@@ -780,7 +796,7 @@ export function createRunnerFactory({
 
     const isBusy = () => state.busy;
 
-    const runner = { send, interrupt, setModel, setPermissionMode, resolvePermission, dispose, isBusy };
+    const runner = { send, interrupt, setModel, setPermissionMode, resolvePermission, pendingPermissionRequests, dispose, isBusy };
     return runner;
   };
 

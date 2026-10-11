@@ -68,6 +68,7 @@ const createFakeRunners = () => {
       const runner = {
         sends: [],
         busy: false,
+        permissionRequests: [],
         isBusy() {
           return runner.busy === true;
         },
@@ -80,6 +81,9 @@ const createFakeRunners = () => {
         async setModel() {},
         resolvePermission() {
           return true;
+        },
+        pendingPermissionRequests() {
+          return runner.permissionRequests;
         },
         async dispose() {},
       };
@@ -130,6 +134,7 @@ const createProxyApp = ({ upstreamPort, runtime, hub, getRuntimeState = null, de
     claudeRoutes: runtime.router,
     mergeClaudeSessionList: (options) => runtime.listSessionsForProxy(options),
     getClaudeActiveSessions: () => runtime.activeSessions(),
+    getClaudePendingPermissions: (directory) => runtime.pendingPermissionsForDirectory(directory),
     claudeEventHub: hub,
     isClaudeSession: (sessionID) => runtime.isClaudeSession(sessionID),
     ...deps,
@@ -421,6 +426,120 @@ describe('Claude Code server wiring', () => {
     const response = await fetch(`${base}/api/session/active`);
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'OpenCode service unavailable' });
+  });
+
+  it('merges parked Claude permission requests into GET /api/permission/request for that directory only', async () => {
+    const hub = createFakeHub();
+    const { runtime, runners } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const hostList = {
+      location: { directory: '/repo' },
+      data: [{ id: 'per_host', sessionID: 'ses_host', action: 'Read', resources: ['/repo/host.txt'] }],
+    };
+    const upstream = express();
+    upstream.get('/api/permission/request', (_req, res) => {
+      res.json(hostList);
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({ upstreamPort, runtime, hub }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    await postJson(`${base}/api/session`, {
+      id: 'ses_claude_park',
+      location: { directory: '/repo' },
+    }, { 'x-openchamber-backend': 'claude' }).then((res) => expect(res.status).toBe(200));
+    await postJson(`${base}/api/session/ses_claude_park/prompt`, { id: 'msg_park_1', text: 'Hello' })
+      .then((res) => expect(res.status).toBe(200));
+
+    const parked = { sessionID: 'ses_claude_park', id: 'per_park_1', action: 'Bash', resources: ['bun test'] };
+    runners.runners[0].permissionRequests.push(parked);
+
+    // The scoped SDK client sends the directory URI-encoded in the header.
+    const scoped = await fetch(`${base}/api/permission/request`, {
+      headers: { 'x-opencode-directory': encodeURIComponent('/repo') },
+    });
+    expect(scoped.status).toBe(200);
+    expect(await scoped.json()).toEqual({ ...hostList, data: [...hostList.data, parked] });
+
+    // The SDK's `location` query scopes a read the same way.
+    const queried = await fetch(`${base}/api/permission/request?location[directory]=${encodeURIComponent('/repo')}`);
+    expect(queried.status).toBe(200);
+    expect((await queried.json()).data).toEqual([...hostList.data, parked]);
+
+    // A read of another directory goes back exactly as the host answered it.
+    const other = await fetch(`${base}/api/permission/request`, {
+      headers: { 'x-opencode-directory': encodeURIComponent('/other') },
+    });
+    expect(other.status).toBe(200);
+    expect(await other.text()).toBe(JSON.stringify(hostList));
+  });
+
+  it('answers no partial pending list when the host read fails', async () => {
+    const hub = createFakeHub();
+    const { runtime, runners } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    upstream.get('/api/permission/request', (_req, res) => {
+      res.socket.destroy();
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({ upstreamPort, runtime, hub }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    // A parked Claude request exists, but the host read failed: the answer
+    // must not be the Claude list alone, or the UI would read it as complete.
+    await postJson(`${base}/api/session`, {
+      id: 'ses_claude_park_fail',
+      location: { directory: '/repo' },
+    }, { 'x-openchamber-backend': 'claude' }).then((res) => expect(res.status).toBe(200));
+    await postJson(`${base}/api/session/ses_claude_park_fail/prompt`, { id: 'msg_park_fail_1', text: 'Hello' })
+      .then((res) => expect(res.status).toBe(200));
+    runners.runners[0].permissionRequests.push({
+      sessionID: 'ses_claude_park_fail',
+      id: 'per_park_fail_1',
+      action: 'Bash',
+      resources: ['bun test'],
+    });
+
+    const response = await fetch(`${base}/api/permission/request`, {
+      headers: { 'x-opencode-directory': encodeURIComponent('/repo') },
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'OpenCode service unavailable' });
+  });
+
+  it('keeps GET /api/permission/request on the generic proxy when the Claude backend is absent', async () => {
+    const hub = createFakeHub();
+    const { runtime } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    let upstreamHits = 0;
+    upstream.get('/api/permission/request', (_req, res) => {
+      upstreamHits += 1;
+      res.json({ location: { directory: '/repo' }, data: [] });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({
+      upstreamPort,
+      runtime,
+      hub,
+      deps: { getClaudePendingPermissions: null },
+    }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    const response = await fetch(`${base}/api/permission/request`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ location: { directory: '/repo' }, data: [] });
+    expect(upstreamHits).toBe(1);
   });
 
   it('multiplexes Claude frames into /api/event and keeps upstream frames byte-identical', async () => {

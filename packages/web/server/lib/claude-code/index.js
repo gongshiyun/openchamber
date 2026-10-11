@@ -887,6 +887,26 @@ export function createClaudeCodeRuntime({
   };
 
   /**
+   * The parked permission requests of the live runners in one directory, in
+   * the shape `GET /api/permission/request` serves (`Permission.Request`).
+   * Only runners that already exist are asked — this read never creates one —
+   * and a value that names no directory matches nothing. Both sides are
+   * compared in the canonical form `normalizeClaudeDirectory` produces, like
+   * the proxy's session-list merge.
+   */
+  const pendingPermissionsForDirectory = (directory) => {
+    const normalized = normalizeClaudeDirectory(directory);
+    if (normalized === null) return [];
+    const requests = [];
+    for (const [sessionID, entry] of runners) {
+      const record = records.get(sessionID);
+      if (!record || normalizeClaudeDirectory(record.directory) !== normalized) continue;
+      requests.push(...(entry.runner?.pendingPermissionRequests?.() ?? []));
+    }
+    return requests;
+  };
+
+  /**
    * Records one synthetic context message, publishes it as the wire event the
    * UI projects into a context block, and keeps its text for the next prompt.
    * OpenCode delivers synthetic messages as context messages of their own
@@ -1018,6 +1038,7 @@ export function createClaudeCodeRuntime({
     isClaudeSession,
     listSessionsForProxy,
     activeSessions,
+    pendingPermissionsForDirectory,
     getSessionMetadata,
     mergeSessionMetadata,
     start,

@@ -79,6 +79,7 @@ const createFakeRunners = () => {
         models: [],
         permissionModes: [],
         permissions: [],
+        permissionRequests: [],
         interrupts: 0,
         disposed: 0,
         permissionResult: true,
@@ -103,6 +104,9 @@ const createFakeRunners = () => {
         resolvePermission(requestID, decision) {
           runner.permissions.push([requestID, decision]);
           return runner.permissionResult;
+        },
+        pendingPermissionRequests() {
+          return runner.permissionRequests;
         },
         async dispose() {
           runner.disposed += 1;
@@ -616,6 +620,36 @@ describe('claude code runtime', () => {
 
       runners.runners[0].busy = false;
       expect(runtime.activeSessions()).toEqual({});
+    });
+  });
+
+  describe('pending permissions', () => {
+    test('lists the parked requests of live runners in the matching directory only', async () => {
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      await createAndPrompt(app, { id: 'ses_perm_repo', location: { directory: 'D:\\X\\Y' } });
+      await createAndPrompt(app, { id: 'ses_perm_other', location: { directory: 'D:\\X\\Z' } });
+      // A created session without a runner is never asked.
+      await createSession(app, { id: 'ses_perm_none', location: { directory: 'D:\\X\\Y' } }).expect(200);
+
+      const parked = {
+        sessionID: 'ses_perm_repo',
+        id: 'per_1',
+        action: 'Bash',
+        resources: ['bun test'],
+      };
+      runners.runners[0].permissionRequests.push(parked);
+
+      // Both spellings of the same directory match; another directory does not.
+      expect(runtime.pendingPermissionsForDirectory('D:\\X\\Y')).toEqual([parked]);
+      expect(runtime.pendingPermissionsForDirectory('D:/X/Y/')).toEqual([parked]);
+      expect(runtime.pendingPermissionsForDirectory('D:\\X\\Z')).toEqual([]);
+
+      // A value that names no directory matches nothing.
+      expect(runtime.pendingPermissionsForDirectory(undefined)).toEqual([]);
+      expect(runtime.pendingPermissionsForDirectory('')).toEqual([]);
     });
   });
 

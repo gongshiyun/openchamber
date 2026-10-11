@@ -1257,11 +1257,13 @@ const serverUtilsRuntime = createServerUtilsRuntime({
   getSpaceEventHub: () => (spacesHost ? globalMessageStreamHub : null),
   // Claude Code sessions: the router answers ahead of the OpenCode readiness
   // gate, the list merge appends their records, the active-session merge keeps
-  // their busy turns in the status snapshot, and their frames ride the global
+  // their busy turns in the status snapshot, the pending-permission merge keeps
+  // a parked approval visible after a reload, and their frames ride the global
   // SSE stream. The runtime is created above, so these are direct.
   claudeRoutes: claudeCodeRuntime.router,
   mergeClaudeSessionList: (options) => claudeCodeRuntime.listSessionsForProxy(options),
   getClaudeActiveSessions: () => claudeCodeRuntime.activeSessions(),
+  getClaudePendingPermissions: (directory) => claudeCodeRuntime.pendingPermissionsForDirectory(directory),
   claudeEventHub: globalMessageStreamHub,
   isClaudeSession: (sessionID) => claudeCodeRuntime.isClaudeSession(sessionID),
   fs,

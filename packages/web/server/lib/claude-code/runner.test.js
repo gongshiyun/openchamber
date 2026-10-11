@@ -473,6 +473,42 @@ describe('permissions', () => {
     expect(replied[0].data).toEqual({ sessionID: SESSION_ID, requestID: request.data.id, reply: 'once' });
   });
 
+  test('pendingPermissionRequests lists parked wire requests and shrinks as they settle', async () => {
+    const { runner, spawns, emitted } = createHarness();
+
+    await runner.send({ text: 'run tests', messageID: 'msg_1' });
+    const canUseTool = spawns[0].options.canUseTool;
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+
+    const controller = new AbortController();
+    const first = canUseTool('Bash', { command: 'bun test' }, { suggestions, toolUseID: 'toolu_1' });
+    const second = canUseTool('Read', { file_path: 'C:\\work\\a.txt' }, { signal: controller.signal, toolUseID: 'toolu_2' });
+    await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 2);
+    const [firstRequest, secondRequest] = eventsOfType(emitted, 'permission.asked');
+
+    // The parked requests are the exact wire shapes the events carried.
+    expect(runner.pendingPermissionRequests()).toEqual([firstRequest.data, secondRequest.data]);
+
+    // An aborted request leaves the list; the answered one leaves with it.
+    controller.abort();
+    expect(await second).toEqual({ behavior: 'deny', message: 'Interrupted' });
+    expect(runner.pendingPermissionRequests()).toEqual([firstRequest.data]);
+
+    expect(runner.resolvePermission(firstRequest.data.id, 'once')).toBe(true);
+    expect(await first).toEqual({ behavior: 'allow' });
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+
+    // Dispose answers what is left parked and empties the list.
+    const third = canUseTool('Glob', { pattern: '**/*.ts' }, { toolUseID: 'toolu_3' });
+    await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 3);
+    const thirdRequest = eventsOfType(emitted, 'permission.asked')[2];
+    expect(runner.pendingPermissionRequests()).toEqual([thirdRequest.data]);
+
+    await runner.dispose();
+    expect(await third).toEqual({ behavior: 'deny', message: 'Session closed' });
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+  });
+
   test('a reject decision denies the tool call with the user message', async () => {
     const { runner, fake, spawns, emitted } = createHarness();
 
