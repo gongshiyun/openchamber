@@ -27,6 +27,7 @@ import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { isHiddenUserMessage } from './message/hiddenUserMessage';
 import { flattenAssistantTextParts, flattenUserTextParts } from '@/lib/messages/messageText';
 import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/lib/messages/providerAuthError';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { TurnGroupingContext } from './lib/turns/types';
@@ -557,6 +558,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     // Summary body removed — flat rendering means text is always inline.
 
+    // The backend is fixed on the session record; a Claude session gets its
+    // errors in Claude Code's name instead of OpenCode's.
+    const sessionIsClaude = useGlobalSessionsStore((state) => {
+        const session = state.entityById.get(sessionId);
+        return session !== undefined && isClaudeBackendSession(session);
+    });
+
     const assistantError = React.useMemo(() => {
         if (isUser) {
             return undefined;
@@ -576,7 +584,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
         if (errorName === 'SessionRetry') {
             return {
-                text: `Opencode failed to send a message. Retry attempt info: ${detail}`,
+                text: sessionIsClaude
+                    ? t('chat.assistantError.claudeRetry', { detail })
+                    : `Opencode failed to send a message. Retry attempt info: ${detail}`,
             };
         }
         if (isLikelyProviderAuthFailure(detail)) {
@@ -586,13 +596,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
         if (detail.trim().toLowerCase() === 'aborted') {
             return {
-                text: 'The running turn was stopped before OpenCode could send the next message.',
+                text: sessionIsClaude
+                    ? t('chat.assistantError.claudeAborted')
+                    : 'The running turn was stopped before OpenCode could send the next message.',
             };
         }
         return {
-            text: `Opencode failed to send message with error: ${detail}`,
+            text: sessionIsClaude
+                ? t('chat.assistantError.claudeFailedToSend', { detail })
+                : `Opencode failed to send message with error: ${detail}`,
         };
-    }, [isUser, message.info]);
+    }, [isUser, message.info, sessionIsClaude, t]);
 
     const assistantErrorText = assistantError?.text;
     // The provider's raw response behind the error, offered as expandable details.

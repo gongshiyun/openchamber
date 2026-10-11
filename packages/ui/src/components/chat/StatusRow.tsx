@@ -21,6 +21,7 @@ interface StatusRowProps {
   agentName?: string;
   modelName?: string | null;
   providerId?: string | null;
+  startingHint?: string | null;
   /** Set while the turn waits on work OpenCode can move to the background. */
   onBackground?: () => void;
 }
@@ -35,6 +36,7 @@ export const StatusRow: React.FC<StatusRowProps> = ({
   agentName,
   modelName,
   providerId,
+  startingHint,
   onBackground,
 }) => {
   const currentSessionId = useChatSessionSelection().sessionId;
@@ -71,6 +73,7 @@ export const StatusRow: React.FC<StatusRowProps> = ({
               agentName={agentName}
               modelName={modelName}
               providerId={providerId}
+              startingHint={startingHint}
             />
           ) : null}
         </div>

@@ -1,5 +1,7 @@
 import React from 'react';
 import { useChatSessionSelection } from '@/components/chat/chatColumnSession';
+import { useI18n } from '@/lib/i18n';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import type { Message, ModelRef, Part, ReasoningPart, TextPart, ToolPart } from '@/lib/opencode/model';
 import { executeToolCalls, isExecuteTool, isShellTool, isSubagentTool } from '@/lib/opencode/tools';
 
@@ -20,6 +22,13 @@ interface WorkingSummary {
     lifecyclePhase: MessageStreamPhase | null;
     statusText: string | null;
     isGenericStatus: boolean;
+    /**
+     * A complete label for a wait the generic phrases cannot explain: a Claude
+     * session that is busy before its newest assistant message has any parts,
+     * i.e. the turn just started and its subprocess is still cold. Replaces
+     * the model-and-status line while it is set.
+     */
+    startingHint: string | null;
     isWaitingForPermission: boolean;
     canAbort: boolean;
     compactionDeadline: number | null;
@@ -68,6 +77,7 @@ const DEFAULT_WORKING: WorkingSummary = {
     lifecyclePhase: null,
     statusText: null,
     isGenericStatus: true,
+    startingHint: null,
     isWaitingForPermission: false,
     canAbort: false,
     compactionDeadline: null,
@@ -143,6 +153,8 @@ type ParsedStatusResult = {
     statusText: string;
     isGenericStatus: boolean;
     canBackground: boolean;
+    /** The newest assistant message has at least one part. */
+    hasParts: boolean;
 };
 
 const getToolStatusPhrase = (toolName: string, count = 1): string => {
@@ -249,7 +261,7 @@ export const createParsedStatus = (parts: Part[], genericKey: string): ParsedSta
         return getStableWorkingPhrase(genericKey);
     })();
 
-    return { activePartType, activeToolName, statusText, isGenericStatus, canBackground: hasBackgroundableWork(parts) };
+    return { activePartType, activeToolName, statusText, isGenericStatus, canBackground: hasBackgroundableWork(parts), hasParts: parts.length > 0 };
 };
 
 const encodeParsedStatus = (status: ParsedStatusResult): string => {
@@ -259,11 +271,12 @@ const encodeParsedStatus = (status: ParsedStatusResult): string => {
         status.statusText,
         status.isGenericStatus ? '1' : '0',
         status.canBackground ? '1' : '0',
+        status.hasParts ? '1' : '0',
     ].join(STATUS_SIGNATURE_SEPARATOR);
 };
 
 const decodeParsedStatus = (signature: string): ParsedStatusResult => {
-    const [activePartType, activeToolName, statusText = 'working', isGenericStatus, canBackground] = signature.split(STATUS_SIGNATURE_SEPARATOR);
+    const [activePartType, activeToolName, statusText = 'working', isGenericStatus, canBackground, hasParts] = signature.split(STATUS_SIGNATURE_SEPARATOR);
     return {
         activePartType: activePartType === 'text' || activePartType === 'tool' || activePartType === 'reasoning' || activePartType === 'editing'
             ? activePartType
@@ -272,6 +285,7 @@ const decodeParsedStatus = (signature: string): ParsedStatusResult => {
         statusText,
         isGenericStatus: isGenericStatus === '1',
         canBackground: canBackground === '1',
+        hasParts: hasParts === '1',
     };
 };
 
@@ -377,6 +391,7 @@ export const getActiveAssistantContext = (messages: Message[], sessionModel?: Mo
 };
 
 export function useAssistantStatus(): AssistantStatusSnapshot {
+    const { t } = useI18n();
     // Inside the chat column, follow the session the timeline shows rather
     // than the live selection, so the status chip changes together with the
     // conversation instead of a commit ahead of it.
@@ -387,7 +402,9 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
         currentSessionDirectory ?? undefined,
     );
 
-    const sessionModel = useSession(currentSessionId ?? undefined, currentSessionDirectory ?? undefined)?.model ?? null;
+    const sessionRecord = useSession(currentSessionId ?? undefined, currentSessionDirectory ?? undefined);
+    const sessionModel = sessionRecord?.model ?? null;
+    const sessionIsClaude = sessionRecord !== undefined && isClaudeBackendSession(sessionRecord);
     const activeAssistant = React.useMemo(
         () => getActiveAssistantContext(rawSessionMessages, sessionModel),
         [rawSessionMessages, sessionModel],
@@ -493,6 +510,13 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             lifecyclePhase: isStreaming ? 'streaming' : isCooldown ? 'cooldown' : null,
             statusText: isWorking ? parsedStatus.statusText : null,
             isGenericStatus: isWorking ? parsedStatus.isGenericStatus : true,
+            // A Claude session that is busy before its newest assistant
+            // message has any parts is cold-starting its subprocess; name that
+            // wait instead of leaving the generic phrase, which explains
+            // nothing about why the first tokens take seconds to arrive.
+            startingHint: isWorking && sessionIsClaude && !parsedStatus.hasParts
+                ? t('chat.composerStatus.claudeStarting')
+                : null,
             isWaitingForPermission: false,
             canAbort: isWorking,
             compactionDeadline: null,
@@ -505,7 +529,7 @@ export function useAssistantStatus(): AssistantStatusSnapshot {
             retryInfo,
             canBackground: isWorking && parsedStatus.canBackground,
         };
-    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext, assistantRetry]);
+    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext, assistantRetry, sessionIsClaude, t]);
 
     const forming = React.useMemo<FormingSummary>(() => {
         const isActive = isPhaseWorking && parsedStatus.activePartType === 'text';

@@ -12,6 +12,8 @@ interface WorkingPlaceholderProps {
   agentName?: string;
   modelName?: string | null;
   providerId?: string | null;
+  /** A complete label for a wait the generic status phrases cannot explain; replaces the model-and-status line. */
+  startingHint?: string | null;
 }
 
 const STATUS_DISPLAY_TIME_MS = 1200;
@@ -64,6 +66,7 @@ export function WorkingPlaceholder({
   retryInfo,
   modelName,
   providerId,
+  startingHint,
 }: WorkingPlaceholderProps) {
   const { t } = useI18n();
   const { src: providerLogoSrc, onError: handleProviderLogoError, hasLogo: hasProviderLogo } = useProviderLogo(providerId ?? null);
@@ -230,14 +233,17 @@ export function WorkingPlaceholder({
     );
   }
 
-  if (!displayedText) {
+  if (!displayedText && !startingHint) {
     return null;
   }
 
   const trimmedModelName = modelName?.trim() ?? '';
-  const label = trimmedModelName.length > 0
-    ? t('chat.statusRow.modelStatus', { model: trimmedModelName, status: displayedText })
-    : displayedText.charAt(0).toUpperCase() + displayedText.slice(1);
+  const displayedStatus = displayedText ?? '';
+  // A starting hint is a complete message of its own ("Claude Code is
+  // starting…"), not a status the model name can be prefixed to.
+  const label = startingHint ?? (trimmedModelName.length > 0
+    ? t('chat.statusRow.modelStatus', { model: trimmedModelName, status: displayedStatus })
+    : displayedStatus.charAt(0).toUpperCase() + displayedStatus.slice(1));
 
   return (
     <div

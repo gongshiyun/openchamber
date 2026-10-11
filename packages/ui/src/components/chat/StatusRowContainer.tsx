@@ -46,6 +46,7 @@ export const StatusRowContainer: React.FC = React.memo(() => {
             agentName={currentAgentName}
             modelName={modelDisplayName}
             providerId={activeModel?.providerId ?? null}
+            startingHint={working.startingHint}
             onBackground={working.canBackground ? backgroundWork : undefined}
         />
     );

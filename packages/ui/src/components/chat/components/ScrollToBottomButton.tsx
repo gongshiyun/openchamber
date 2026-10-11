@@ -50,11 +50,11 @@ const WorkingPillBody: React.FC<{ onClick: () => void }> = ({ onClick }) => {
         return getProviderModelDisplayName(provider, activeModel.modelId) || null;
     }, [activeModel, providers]);
 
-    if (!working.isWorking || !working.statusText) return <ScrollAction onClick={onClick} />;
-    const status = working.statusText;
-    const label = modelName && modelName.trim().length > 0
+    if (!working.isWorking || (!working.statusText && !working.startingHint)) return <ScrollAction onClick={onClick} />;
+    const status = working.statusText ?? '';
+    const label = working.startingHint ?? (modelName && modelName.trim().length > 0
         ? t('chat.statusRow.modelStatus', { model: modelName.trim(), status })
-        : status.charAt(0).toUpperCase() + status.slice(1);
+        : status.charAt(0).toUpperCase() + status.slice(1));
 
     return (
         <>

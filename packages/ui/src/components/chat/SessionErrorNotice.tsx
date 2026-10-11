@@ -4,9 +4,10 @@ import { Button } from '@/components/ui/button';
 import { ErrorResponseDetails } from '@/components/chat/ErrorResponseDetails';
 import { useI18n } from '@/lib/i18n';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { getLastConversationMessage, type Message, type Part, type Session } from '@/lib/opencode/model';
 import { useLatestSessionError } from '@/sync/notification-store';
-import { useDirectoryStore, useSessionStatus, useSessionStatusSnapshotReady } from '@/sync/sync-context';
+import { useDirectoryStore, useDirectorySync, useSessionStatus, useSessionStatusSnapshotReady } from '@/sync/sync-context';
 import { refetchSessionMessages } from '@/sync/session-actions';
 import { LongErrorText } from './LongErrorText';
 import { readLastMessageState, scheduleUnansweredRechecks, type LastMessageState } from './sessionErrorNoticeState';
@@ -121,6 +122,9 @@ const useLastMessageState = (sessionId: string, directory?: string): LastMessage
  *
  * Detail, best first: the live error event; the parent's subagent tool error
  * for a child session; the session's own stored outcome.
+ *
+ * A Claude session gets the same notice in Claude Code's name, and no status
+ * button: the OpenCode status dialog does not describe that backend.
  */
 export const SessionErrorNotice: React.FC<SessionErrorNoticeProps> = ({ sessionId, directory }) => {
   const { t } = useI18n();
@@ -129,6 +133,13 @@ export const SessionErrorNotice: React.FC<SessionErrorNoticeProps> = ({ sessionI
   const statusSnapshotReady = useSessionStatusSnapshotReady(directory, sessionId);
   const lastMessage = useLastMessageState(sessionId, directory);
   const storedFailure = useStoredFailure(sessionId, directory);
+  const sessionIsClaude = useDirectorySync(
+    React.useCallback((state) => {
+      const session = state.session.find((candidate) => candidate.id === sessionId);
+      return session !== undefined && isClaudeBackendSession(session);
+    }, [sessionId]),
+    directory,
+  );
 
   // An omitted status means idle only after a successful status snapshot:
   // after a reload the last prompt is hydrated before the runtime reports
@@ -180,20 +191,27 @@ export const SessionErrorNotice: React.FC<SessionErrorNoticeProps> = ({ sessionI
   let detail: string;
   let hasDetails = true;
   let responseBody: string | null = null;
+  // One copy set per backend, chosen once: the Claude notice names Claude
+  // Code, and its "no details" line does not point at the OpenCode status
+  // report the Claude notice never offers.
+  const stoppedTitle = sessionIsClaude ? t('chat.sessionError.claude.title') : t('chat.sessionError.title');
+  const interruptedTitle = sessionIsClaude ? t('chat.sessionError.claude.interrupted') : t('chat.sessionError.interrupted');
+  const noReplyTitle = sessionIsClaude ? t('chat.sessionError.claude.noReply') : t('chat.sessionError.noReply');
+  const noDetailsText = sessionIsClaude ? t('chat.sessionError.claude.noDetails') : t('chat.sessionError.noDetails');
   if (reportedError) {
-    title = t('chat.sessionError.title');
+    title = stoppedTitle;
     hasDetails = Boolean(reportedError.error?.message);
-    const message = reportedError.error?.message ?? t('chat.sessionError.noDetails');
+    const message = reportedError.error?.message ?? noDetailsText;
     detail = reportedError.error?.name ? `${reportedError.error.name}: ${message}` : message;
     responseBody = reportedError.error?.responseBody ?? null;
   } else if (storedFailureApplies) {
-    title = storedFailure.outcome === 'interrupted' ? t('chat.sessionError.interrupted') : t('chat.sessionError.title');
+    title = storedFailure.outcome === 'interrupted' ? interruptedTitle : stoppedTitle;
     hasDetails = storedFailure.parentToolError !== null;
-    detail = storedFailure.parentToolError ?? t('chat.sessionError.noDetails');
+    detail = storedFailure.parentToolError ?? noDetailsText;
   } else {
-    title = t('chat.sessionError.noReply');
+    title = noReplyTitle;
     hasDetails = false;
-    detail = t('chat.sessionError.noDetails');
+    detail = noDetailsText;
   }
 
   return (
@@ -211,7 +229,7 @@ export const SessionErrorNotice: React.FC<SessionErrorNoticeProps> = ({ sessionI
             <div className="mt-1 pl-[1.375rem] typography-meta text-muted-foreground break-words">{visibleText}</div>
           )}
         </LongErrorText>
-        {!hasDetails ? (
+        {!hasDetails && !sessionIsClaude ? (
           <div className="pl-[1.375rem]">
             <Button
               variant="link"

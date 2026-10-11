@@ -2228,9 +2228,10 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   // worktree than the UI's current directory could never be aborted).
   const { directory } = dirStoreForSession(sessionId)
   try {
-    await opencodeClient.abortSession(sessionId, directory)
+    const interrupted = await opencodeClient.abortSession(sessionId, directory)
+    console.info(`[session-actions] abort settled for ${sessionId} (interrupted: ${interrupted})`)
   } catch (error) {
-    console.error("[session-actions] abort failed", error)
+    console.error(`[session-actions] abort failed for ${sessionId}`, error)
   }
 }
 
