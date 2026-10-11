@@ -17,7 +17,7 @@ import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
 import { OpenCode } from '@opencode/client';
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
 
 import { messageIdFromEvent } from '../../../../ui/src/lib/opencode/events.ts';
 import { projectMessages, projectSession } from '../../../../ui/src/lib/opencode/projection.ts';
@@ -112,6 +112,64 @@ const createFakeRunners = () => {
   return { factory, sessions, runners };
 };
 
+/**
+ * The one-shot `spawnQueryImpl` a test runtime defaults to: an empty result,
+ * which derives no generated title and leaves existing behavior untouched.
+ * Tests that exercise `session.generate` or generated titles inject their own.
+ */
+const createSilentSpawnQuery = () => async () => (async function* () {
+  yield { type: 'result', subtype: 'success', result: '' };
+})();
+
+/**
+ * A one-shot `spawnQueryImpl` yielding the given SDK messages, recording every
+ * spawn. The result is delivered when the test calls `release()`, so a test
+ * can change the title (or the record) before the generation completes; `done`
+ * resolves once the query has been consumed.
+ */
+const createManualOneShot = ({ result = 'Model title', error = null } = {}) => {
+  const calls = [];
+  let release = null;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markDone = null;
+  const done = new Promise((resolve) => {
+    markDone = resolve;
+  });
+  return {
+    calls,
+    release,
+    done,
+    spawn: async (params) => {
+      calls.push(params);
+      return (async function* () {
+        try {
+          await gate;
+          if (error) throw error;
+          yield { type: 'result', subtype: 'success', result };
+        } finally {
+          markDone();
+        }
+      })();
+    },
+  };
+};
+
+/** A one-shot `spawnQueryImpl` that yields the given messages as they are. */
+const createOneShot = (...messages) => {
+  const calls = [];
+  return {
+    calls,
+    spawn: async (params) => {
+      calls.push(params);
+      return (async function* () {
+        for (const message of messages) yield message;
+      })();
+    },
+  };
+};
+
 const createRuntime = ({ runners = createFakeRunners(), hub = createHub(), deps = {} } = {}) => {
   const clock = {
     value: CLOCK,
@@ -126,6 +184,9 @@ const createRuntime = ({ runners = createFakeRunners(), hub = createHub(), deps 
     getSettings: () => ({}),
     createRunnerFactoryImpl: () => runners.factory,
     resolveCliPath: async () => 'C:\\fake\\claude.exe',
+    // Title generation must never reach the real SDK in tests; the default
+    // fake answers an empty result, which applies nothing.
+    spawnQueryImpl: createSilentSpawnQuery(),
     now: () => clock.value,
     ...deps,
   });
@@ -271,6 +332,8 @@ describe('claude code runtime', () => {
         title: 'Kept',
         createdAt: CLOCK,
         updatedAt: CLOCK,
+        cost: 0,
+        tokens: ZERO_TOKENS,
         model: { providerID: 'claude-code', id: 'sonnet' },
         claudeSessionUuid: 'claude-uuid-1',
         metadata: { openchamber: { pinned: true, backend: 'claude' } },
@@ -896,6 +959,317 @@ describe('claude code runtime', () => {
         .expect(200);
       expect((await readIndex()).ses_title_blank.title).toBe('');
       expect(hub.ofType('session.renamed')).toHaveLength(1);
+    });
+  });
+
+  describe('session.generate', () => {
+    test('answers one-shot text from the result, without a runner or transcript records', async () => {
+      const oneShot = createOneShot(
+        { type: 'system', subtype: 'init', session_id: 'claude-one-shot' },
+        { type: 'result', subtype: 'success', result: 'Draft commit message' },
+      );
+      const { runtime, runners } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gen_1', location: { directory: 'C:\\work\\gen' } }).expect(200);
+
+      const response = await request(app)
+        .post('/api/session/ses_gen_1/generate')
+        .send({ prompt: 'Draft a commit message' })
+        .expect(200);
+
+      expect(response.body).toEqual({ data: { text: 'Draft commit message' } });
+      expect(oneShot.calls).toHaveLength(1);
+      expect(oneShot.calls[0].prompt).toBe('Draft a commit message');
+      expect(oneShot.calls[0].options).toMatchObject({
+        cwd: 'C:/work/gen',
+        maxTurns: 1,
+        tools: [],
+        pathToClaudeCodeExecutable: 'C:\\fake\\claude.exe',
+      });
+      expect(oneShot.calls[0].options.resume).toBeUndefined();
+
+      // The one-shot never creates a runner and never enters history.
+      expect(runners.runners).toEqual([]);
+      const page = await request(app).get('/api/session/ses_gen_1/message').expect(200);
+      expect(page.body.data).toEqual([]);
+      expect(await fileExists(transcriptPath('ses_gen_1'))).toBe(false);
+    });
+
+    test("resumes the record's Claude session id when it has one", async () => {
+      await fs.mkdir(path.dirname(indexPath()), { recursive: true });
+      await fs.writeFile(indexPath(), JSON.stringify({
+        ses_gen_resume: {
+          directory: 'C:\\work\\gen',
+          title: 'Resume',
+          createdAt: 1,
+          updatedAt: 1,
+          cost: 0,
+          tokens: ZERO_TOKENS,
+          model: { providerID: 'claude-code', id: 'opus' },
+          claudeSessionUuid: 'claude-uuid-9',
+          metadata: {},
+        },
+      }), 'utf8');
+      const oneShot = createOneShot({ type: 'result', subtype: 'success', result: 'Continued' });
+      const { runtime } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+
+      await request(app)
+        .post('/api/session/ses_gen_resume/generate')
+        .send({ prompt: 'Continue' })
+        .expect(200);
+
+      expect(oneShot.calls[0].options.resume).toBe('claude-uuid-9');
+    });
+
+    test('answers a tagged 503 when the one-shot query fails', async () => {
+      const { runtime } = createRuntime({
+        deps: {
+          spawnQueryImpl: async () => {
+            throw new Error('spawn failed');
+          },
+        },
+      });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gen_fail', location: { directory: 'C:\\work\\gen' } }).expect(200);
+
+      const response = await request(app)
+        .post('/api/session/ses_gen_fail/generate')
+        .send({ prompt: 'Hi' })
+        .expect(503);
+
+      expect(response.body).toMatchObject({ _tag: 'ServiceUnavailableError' });
+      expect(response.body.message).toContain('spawn failed');
+    });
+
+    test('answers a tagged 503 when the stream ends without a result', async () => {
+      const oneShot = createOneShot({ type: 'system', subtype: 'init' });
+      const { runtime } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gen_empty', location: { directory: 'C:\\work\\gen' } }).expect(200);
+
+      const response = await request(app)
+        .post('/api/session/ses_gen_empty/generate')
+        .send({ prompt: 'Hi' })
+        .expect(503);
+
+      expect(response.body).toMatchObject({ _tag: 'ServiceUnavailableError' });
+      expect(response.body.message).toContain('ended before returning a result');
+    });
+
+    test('answers a tagged 503 when the result reports an error', async () => {
+      // A success-subtype result with `is_error` carries the error text in
+      // `result`; it must fail instead of being handed back as generated text.
+      const oneShot = createOneShot({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API error: overloaded',
+      });
+      const { runtime } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gen_error', location: { directory: 'C:\\work\\gen' } }).expect(200);
+
+      const response = await request(app)
+        .post('/api/session/ses_gen_error/generate')
+        .send({ prompt: 'Hi' })
+        .expect(503);
+
+      expect(response.body).toMatchObject({ _tag: 'ServiceUnavailableError' });
+      expect(response.body.message).toContain('failed before returning text');
+    });
+  });
+
+  describe('usage and cost', () => {
+    test('onUsage replaces cost, accumulates tokens, emits session.usage.updated and survives a reload', async () => {
+      const first = createRuntime();
+      await first.runtime.start();
+      const app = createApp(first.runtime);
+      await createAndPrompt(app, { id: 'ses_usage_1', location: { directory: 'C:\\work\\usage' } });
+
+      const onUsage = first.runners.sessions[0].onUsage;
+      onUsage({ cost: 0.05, tokens: { input: 10, output: 4, reasoning: 1, cache: { read: 3, write: 2 } } });
+      onUsage({ cost: 0.08, tokens: { input: 5, output: 6, reasoning: 0, cache: { read: 1, write: 0 } } });
+
+      const totals = { input: 15, output: 10, reasoning: 1, cache: { read: 4, write: 2 } };
+      await waitFor(async () => (await readIndex()).ses_usage_1.cost === 0.08);
+      // The latest cumulative cost replaces the record's; token counts add up.
+      expect((await readIndex()).ses_usage_1.tokens).toEqual(totals);
+
+      const emitted = first.hub.ofType('session.usage.updated');
+      expect(emitted).toHaveLength(2);
+      expect(emitted[0]).toMatchObject({
+        data: {
+          sessionID: 'ses_usage_1',
+          cost: 0.05,
+          tokens: { input: 10, output: 4, reasoning: 1, cache: { read: 3, write: 2 } },
+        },
+        location: { directory: 'C:/work/usage' },
+      });
+      expect(emitted[1].data).toEqual({ sessionID: 'ses_usage_1', cost: 0.08, tokens: totals });
+
+      // The wire record answers the same totals through the UI's projection.
+      const info = (await request(app).get('/api/session/ses_usage_1').expect(200)).body.data;
+      expect(info.cost).toBe(0.08);
+      expect(info.tokens).toEqual(totals);
+      expect(projectSession(info)).toMatchObject({ cost: 0.08, tokens: totals });
+
+      // A new runtime reloads the persisted totals.
+      await first.runtime.stop();
+      const second = createRuntime();
+      await second.runtime.start();
+      expect(second.runtime.listSessionsForProxy({}).find((record) => record.id === 'ses_usage_1'))
+        .toMatchObject({ cost: 0.08, tokens: totals });
+      const reread = (await request(createApp(second.runtime)).get('/api/session/ses_usage_1').expect(200)).body.data;
+      expect(reread.cost).toBe(0.08);
+      expect(reread.tokens).toEqual(totals);
+    });
+  });
+
+  describe('generated titles', () => {
+    test('replaces the derived title with the model title and emits session.renamed', async () => {
+      const oneShot = createManualOneShot({ result: '  Model-written title  \nignored line' });
+      const { runtime, hub } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gentitle_1', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_gentitle_1/prompt')
+        .send({ id: 'msg_gt_1', text: 'Fix the parser' })
+        .expect(200);
+      expect(hub.ofType('session.renamed')).toEqual([
+        expect.objectContaining({ data: { sessionID: 'ses_gentitle_1', title: 'Fix the parser' } }),
+      ]);
+
+      oneShot.release();
+      await oneShot.done;
+      await waitFor(async () => (await readIndex()).ses_gentitle_1.title === 'Model-written title');
+      const renamed = hub.ofType('session.renamed');
+      expect(renamed).toHaveLength(2);
+      expect(renamed[1].data).toEqual({ sessionID: 'ses_gentitle_1', title: 'Model-written title' });
+
+      // The one-shot carries the instructions and the user's text, on `haiku`.
+      expect(oneShot.calls).toHaveLength(1);
+      expect(oneShot.calls[0].prompt).toBe(
+        'Reply with a title only: max 6 words, no quotes, no punctuation at the end, same language as the text. Text: Fix the parser',
+      );
+      expect(oneShot.calls[0].options).toEqual({
+        cwd: 'C:/work/title',
+        maxTurns: 1,
+        tools: [],
+        model: 'haiku',
+      });
+    });
+
+    test('a title changed before the generation completed is not clobbered', async () => {
+      const oneShot = createManualOneShot({ result: 'Model-written title' });
+      const { runtime, hub } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gentitle_2', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_gentitle_2/prompt')
+        .send({ id: 'msg_gt_2', text: 'Fix the parser' })
+        .expect(200);
+      await request(app).patch('/api/session/ses_gentitle_2').send({ title: 'Manual title' }).expect(204);
+
+      oneShot.release();
+      await oneShot.done;
+      // Give the completed generation a beat to run its title check.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect((await readIndex()).ses_gentitle_2.title).toBe('Manual title');
+      // The derived rename and the manual one; the generation applied nothing.
+      expect(hub.ofType('session.renamed')).toHaveLength(2);
+    });
+
+    test('leaves the derived title when generation fails', async () => {
+      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      try {
+        const oneShot = createManualOneShot({ error: new Error('haiku is unavailable') });
+        const { runtime, hub } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+        await runtime.start();
+        const app = createApp(runtime);
+        await createSession(app, { id: 'ses_gentitle_3', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+        await request(app)
+          .post('/api/session/ses_gentitle_3/prompt')
+          .send({ id: 'msg_gt_3', text: 'Fix the parser' })
+          .expect(200);
+
+        oneShot.release();
+        await oneShot.done;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect((await readIndex()).ses_gentitle_3.title).toBe('Fix the parser');
+        expect(hub.ofType('session.renamed')).toHaveLength(1);
+        // The failure is silent: one debug line, no thrown error, no rename.
+        expect(debug).toHaveBeenCalledTimes(1);
+      } finally {
+        debug.mockRestore();
+      }
+    });
+
+    test('only the first prompt with text triggers title generation', async () => {
+      const oneShot = createManualOneShot({ result: 'Model title' });
+      const { runtime, hub } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gentitle_4', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_gentitle_4/prompt')
+        .send({ id: 'msg_gt_4a', text: 'Fix the parser' })
+        .expect(200);
+      oneShot.release();
+      await waitFor(async () => (await readIndex()).ses_gentitle_4.title === 'Model title');
+
+      await request(app)
+        .post('/api/session/ses_gentitle_4/prompt')
+        .send({ id: 'msg_gt_4b', text: 'A later prompt' })
+        .expect(200);
+      expect(oneShot.calls).toHaveLength(1);
+      expect((await readIndex()).ses_gentitle_4.title).toBe('Model title');
+      expect(hub.ofType('session.renamed')).toHaveLength(2);
+
+      // A title the create set never triggers generation either.
+      await createSession(app, {
+        id: 'ses_gentitle_5',
+        title: 'Preset',
+        location: { directory: 'C:\\work\\title' },
+      }).expect(200);
+      await request(app)
+        .post('/api/session/ses_gentitle_5/prompt')
+        .send({ id: 'msg_gt_5', text: 'Must not generate' })
+        .expect(200);
+      expect(oneShot.calls).toHaveLength(1);
+    });
+
+    test('cuts the title prompt to 500 characters and the generated title to 80', async () => {
+      const longText = `Fix the parser ${'x'.repeat(600)}`;
+      const oneShot = createManualOneShot({ result: 'y'.repeat(120) });
+      const { runtime } = createRuntime({ deps: { spawnQueryImpl: oneShot.spawn } });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gentitle_6', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_gentitle_6/prompt')
+        .send({ id: 'msg_gt_6', text: longText })
+        .expect(200);
+
+      oneShot.release();
+      await waitFor(async () => (await readIndex()).ses_gentitle_6.title === 'y'.repeat(80));
+      expect(oneShot.calls[0].prompt).toBe(
+        `Reply with a title only: max 6 words, no quotes, no punctuation at the end, same language as the text. Text: ${longText.slice(0, 500)}`,
+      );
     });
   });
 

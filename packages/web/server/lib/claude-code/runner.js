@@ -35,6 +35,11 @@
 // the window and keeps the runner alive instead. The next prompt resumes the
 // Claude session through `resume`.
 //
+// Usage: a turn that settles from an SDK `result` carries the session's
+// running `total_cost_usd` and the turn's token `usage`; the runner reports
+// them through `onUsage` so the registry can keep the session's totals. Abort
+// and transport-failure paths carry no usage and report none.
+//
 // SDK facts assumed here, verified against @anthropic-ai/claude-agent-sdk
 // 0.3.296 types (re-verify when the dependency lands, Task 10/12):
 //   - `query({ prompt, options })` returns an AsyncGenerator of SDK messages
@@ -157,29 +162,39 @@ const createInputQueue = () => {
 };
 
 /**
+ * The production `spawnQuery`: the Agent SDK is imported lazily, so a process
+ * that never prompts a Claude session never loads it. Exported so the
+ * runtime's one-shot callers (`session.generate`, generated titles) spawn
+ * through the same import the runner factory defaults to.
+ *
+ * @param {{ prompt: AsyncIterable<object> | string, options: object }} params
+ */
+export const defaultSpawnQuery = async (params) => {
+  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+  return query(params);
+};
+
+/**
  * Build a factory for per-session Claude runners.
  *
  * `spawnQuery` defaults to a lazy dynamic import of the Agent SDK `query()`;
  * tests inject a fake and production wiring may inject the import explicitly.
  *
  * @param {{
- *   spawnQuery?: (params: { prompt: AsyncIterable<object>, options: object }) => object | Promise<object>,
+ *   spawnQuery?: (params: { prompt: AsyncIterable<object> | string, options: object }) => object | Promise<object>,
  *   createPermissionId?: () => string,
  *   idleMs?: number,
  *   now?: () => number,
  * }} [options]
  */
 export function createRunnerFactory({
-  spawnQuery = async (params) => {
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
-    return query(params);
-  },
+  spawnQuery = defaultSpawnQuery,
   createPermissionId = defaultPermissionId,
   idleMs = DEFAULT_IDLE_MS,
   now = Date.now,
 } = {}) {
   const createRunner = (session) => {
-    const { sessionID, directory, transcript, translator, emit, onSessionId, onIdle } = session;
+    const { sessionID, directory, transcript, translator, emit, onSessionId, onIdle, onUsage } = session;
     const cwd = session.cwd ? session.cwd : directory;
 
     const state = {
@@ -231,8 +246,20 @@ export function createRunnerFactory({
       }
     };
 
+    // Usage is a side channel like the live stream: a reporting failure must
+    // not take down the loop, and the transcript keeps the step's own record.
+    const reportUsage = (data) => {
+      try {
+        onUsage?.(data);
+      } catch {
+        // Best effort.
+      }
+    };
+
     // Translator events are durable: the transcript records them first, then
-    // the live stream publishes them.
+    // the live stream publishes them. A step settled by an SDK result carries
+    // the session's running usage; the abort and transport-failure paths
+    // carry none.
     const publishTranslated = (events) => {
       for (const event of events) {
         transcript.applyWireEvent(event);
@@ -240,6 +267,12 @@ export function createRunnerFactory({
           state.assistantMessageID = event.data.assistantMessageID;
         }
         emitEvent(event);
+        if (
+          (event.type === 'session.step.ended' || event.type === 'session.step.failed')
+          && (event.data?.cost !== undefined || event.data?.tokens !== undefined)
+        ) {
+          reportUsage({ cost: event.data.cost, tokens: event.data.tokens });
+        }
       }
     };
 

@@ -159,6 +159,7 @@ const createHarness = ({ session = {}, factory = {} } = {}) => {
   const emitted = [];
   const sessionIds = [];
   const idleCalls = [];
+  const usageCalls = [];
   const spawns = [];
   const promptMessages = [];
   const fake = createFakeQuery();
@@ -203,10 +204,11 @@ const createHarness = ({ session = {}, factory = {} } = {}) => {
     translator,
     emit: (event) => emitted.push(event),
     onSessionId: (sessionId) => sessionIds.push(sessionId),
+    onUsage: (usage) => usageCalls.push(usage),
     onIdle: (idleRunner) => idleCalls.push(idleRunner),
     ...session,
   });
-  return { runner, fake, fs, transcript, spawns, promptMessages, emitted, sessionIds, idleCalls };
+  return { runner, fake, fs, transcript, spawns, promptMessages, emitted, sessionIds, idleCalls, usageCalls };
 };
 
 // ---------------------------------------------------------------------------
@@ -641,5 +643,57 @@ describe('interrupt and failure', () => {
     fake.push(blockDelta(0, { type: 'text_delta', text: 'late' }));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(emitted.length).toBe(emittedBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage
+// ---------------------------------------------------------------------------
+
+describe('usage', () => {
+  const EXPECTED = {
+    cost: 0.01,
+    tokens: { input: 10, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+  };
+
+  test('a successful result reports its cumulative cost and per-turn tokens', async () => {
+    const { runner, fake, emitted, usageCalls } = createHarness();
+
+    await runner.send({ text: 'hi', messageID: 'msg_1' });
+    fake.push(blockStart(0, { type: 'text' }));
+    fake.push(successResult());
+    await waitFor(() => eventsOfType(emitted, 'session.execution.succeeded').length === 1);
+
+    expect(usageCalls).toEqual([EXPECTED]);
+  });
+
+  test('a failed result reports its cost and tokens too', async () => {
+    const { runner, fake, emitted, usageCalls } = createHarness();
+
+    await runner.send({ text: 'hi', messageID: 'msg_1' });
+    fake.push(successResult({ subtype: 'error_during_execution', is_error: true, result: 'boom' }));
+    await waitFor(() => eventsOfType(emitted, 'session.execution.failed').length === 1);
+
+    expect(eventsOfType(emitted, 'session.step.failed')).toHaveLength(1);
+    expect(usageCalls).toEqual([EXPECTED]);
+  });
+
+  test('an interrupted turn and a transport failure report no usage', async () => {
+    const interrupted = createHarness();
+    await interrupted.runner.send({ text: 'long task', messageID: 'msg_1' });
+    interrupted.fake.push(blockStart(0, { type: 'text' }));
+    await waitFor(() => eventsOfType(interrupted.emitted, 'session.step.started').length === 1);
+    await interrupted.runner.interrupt();
+    // The next result settles the turn as aborted instead of translating it,
+    // so its cost and tokens never reach onUsage.
+    interrupted.fake.push(successResult());
+    await waitFor(() => eventsOfType(interrupted.emitted, 'session.execution.interrupted').length === 1);
+    expect(interrupted.usageCalls).toEqual([]);
+
+    const failed = createHarness();
+    await failed.runner.send({ text: 'do work', messageID: 'msg_2' });
+    failed.fake.fail(new Error('process exited'));
+    await waitFor(() => eventsOfType(failed.emitted, 'session.execution.failed').length === 1);
+    expect(failed.usageCalls).toEqual([]);
   });
 });

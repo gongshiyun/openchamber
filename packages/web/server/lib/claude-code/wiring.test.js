@@ -98,6 +98,11 @@ const createRuntime = ({ dataDir, hub, runners = createFakeRunners() }) => {
     getSettings: () => ({}),
     createRunnerFactoryImpl: () => runners.factory,
     resolveCliPath: async () => 'C:\\fake\\claude.exe',
+    // Title generation must never reach the real SDK in tests: the fake
+    // answers an empty result, which derives no title and applies nothing.
+    spawnQueryImpl: async () => (async function* () {
+      yield { type: 'result', subtype: 'success', result: '' };
+    })(),
   });
   return { runtime, runners };
 };

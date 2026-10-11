@@ -32,18 +32,23 @@ The shared UI talks to every backend through `@opencode/client` 2.x, whose gener
 | `/api/session/:sessionID/model` | POST | `204` |
 | `/api/session/:sessionID/agent` | POST | `204` |
 | `/api/session/:sessionID/prompt` | POST | `200 { data }` |
+| `/api/session/:sessionID/generate` | POST | `200 { data }` — one-shot text; never enters history |
 | `/api/session/:sessionID/synthetic` | POST | `200 { data }` |
 | `/api/session/:sessionID/interrupt` | POST | `200 { interrupted }` |
 | `/api/session/:sessionID/message` | GET | `200 { data, cursor }` |
 | `/api/session/:sessionID/permission/:permID/reply` | POST | `204` |
 
-Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, synthetic text, or decision; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission. The shared UI maps the tag back to a status. `session.synthetic` is the context channel the UI uses ahead of a prompt: it answers `200 { data }` with the recorded message and never starts a turn (see Synthetic context below).
+Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, synthetic text, or decision; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission; `session.generate` answers the tagged `503 ServiceUnavailableError` when its one-shot query fails or times out (its descriptor declares 400/401/404/503). The shared UI maps the tag back to a status. `session.synthetic` is the context channel the UI uses ahead of a prompt: it answers `200 { data }` with the recorded message and never starts a turn (see Synthetic context below).
 
 `message.list` keeps the OpenCode v2 page semantics: `order` defaults to newest first, `cursor` is a message id the page starts strictly after, and `next` is present only while more records remain in the walk direction. History answers from the transcript, so it works with no runner at all.
 
 ### Synthetic context
 
 `POST /api/session/:sessionID/synthetic` admits one context item (a quoted selection, terminal output, PR checks, skill instructions) as a `synthetic` message before the prompt that carries it. The registry records it in the transcript — so it shows in `message.list` history and, as the `session.synthetic` wire event, in every live stream — and answers `200 { data }` with the recorded wire record; the envelope id is the client's message id in the event id space (`msg_` → `evt_`), so the optimistic context block the UI already rendered reconciles in place. Nothing starts a turn: the admitted texts wait on the session record, and the next `sendPrompt` hands them to the runner, which leads the SDK turn's content with them separated by blank lines (the transcript's user record keeps the user's own text). The list is cleared once the prompt is sent — a failed send does not roll it back — and the payload's `delivery` and `resume` are ignored in v1.
+
+### One-shot text
+
+`POST /api/session/:sessionID/generate` runs one short-lived SDK `query()` in the session's context (`maxTurns: 1`, no tools, the record's `claudeSessionUuid` as `resume`, the resolved CLI path) and answers the result message's text as `200 { data: { text } }`. Nothing is recorded — no runner, no transcript record, no wire event — so the text never enters history; the query is closed when the call settles, and any failure or the 60-second timeout answers the tagged 503. The shared UI calls it for transient generation in a session's context (`generateSessionText` in `packages/ui/src/lib/opencode/client.ts`).
 
 ### Creating a Claude session
 
@@ -59,7 +64,7 @@ Every event is an OpenCode v2 wire shape, injected into the server's global hub 
 
 The exact list:
 
-- Registry events (`index.js`): `session.created`, `session.renamed`, `session.moved`, `session.deleted`, `session.model.selected`, `session.agent.selected` (only when the value changes), `session.metadata.updated`, `session.synthetic`.
+- Registry events (`index.js`): `session.created`, `session.renamed`, `session.moved`, `session.deleted`, `session.model.selected`, `session.agent.selected` (only when the value changes), `session.metadata.updated`, `session.synthetic`, `session.usage.updated`.
 - Runner events (`runner.js` / `translator.js`):
   - execution: `session.execution.started`, `session.execution.succeeded`, `session.execution.interrupted` (`reason: 'user' | 'idle'`), `session.execution.failed`
   - steps: `session.step.started`, `session.step.ended`, `session.step.failed`
@@ -70,6 +75,10 @@ The exact list:
 `session.synthetic` is the one registry event whose envelope id is load-bearing: it is the client's message id with `msg_` swapped for `evt_`, because the UI derives the message it updates from the event id (`messageIdFromEvent` in `packages/ui/src/lib/opencode/events.ts`). Its data is `{ sessionID, text, description?, metadata? }`, with the optional fields present only when the caller sent them.
 
 The module emits no `session.status` and no `session.idle` of its own; v2 derives live status from the execution events, and the UI's `session.error` comes from `session.execution.failed` — the same reading as OpenCode's own stream. The translator's output-side vocabulary (`message.updated`, `session.error`, ...) is never emitted as a wire event.
+
+### Usage accounting
+
+Every SDK `result` that settles a turn carries the session's cumulative `total_cost_usd` and the turn's token `usage`; the runner reports them through `onUsage` and the registry folds them into the record. `cost` is **replaced** with the latest cumulative value — the SDK's total continues across resumed queries, so summing would double-count — while `tokens` (`input`, `output`, `reasoning`, `cache.read`, `cache.write`) are **added** per result. The registry persists the record and emits `session.usage.updated` (`{ sessionID, cost, tokens }`) through the hub; the UI's `translateWireEvent` folds that into the session's `cost`/`tokens`/`time.updated`, and a reload answers the same totals through `session.get`. A session with no results yet reports `cost: 0` and zero tokens. Abort and transport-failure paths carry no usage and report none.
 
 ### Permissions
 
@@ -85,7 +94,7 @@ Every decision emits `permission.replied` with the reply. An aborted tool signal
 
 Everything lives under `<dataDir>/claude-code/`:
 
-- `sessions.json` — the registry index, one JSON object keyed by session id. An entry holds `directory`, `projectID`, `title`, `createdAt`, `updatedAt`, `model`, `claudeSessionUuid`, `metadata`, and optionally `agent`. Writes are atomic (a temp file in the same directory, then a rename) and serialized on one chain, so an older snapshot never lands last; the snapshot is taken when the write is queued.
+- `sessions.json` — the registry index, one JSON object keyed by session id. An entry holds `directory`, `projectID`, `title`, `createdAt`, `updatedAt`, `cost`, `tokens`, `model`, `claudeSessionUuid`, `metadata`, and optionally `agent`. Writes are atomic (a temp file in the same directory, then a rename) and serialized on one chain, so an older snapshot never lands last; the snapshot is taken when the write is queued.
 - `sessions/<sessionID>.jsonl` — one append-only transcript per session, the message records behind `message.list`. `load()` replays the lines through the same code that applies live events; a malformed last line is a torn append from a crash and is ignored, and a malformed line before it throws with the 1-based line number. A failed load is not memoized — the next call retries. `close()` stops accepting records; `flush()` drains queued lines, and failed writes stay queued for the next flush.
 
 On load, `directory` is authoritative: `projectID` is re-derived from it rather than trusted from the file, and a field that no longer has the right type falls back to its default. Session ids must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; an id that could escape the sessions directory or name a file Windows rejects is refused at the door and skipped in a stored index.
@@ -99,7 +108,7 @@ Boot: `start()` rejects on an unreadable or malformed index, because starting em
 ## Lifecycle
 
 - Lazy start. A session has no process until its first prompt: `getSession`, `message.list`, the list merge, and metadata all answer from disk. After a restart the history is on disk, and a prompt starts a new `query()`.
-- Auto-title. The first prompt with text names a session whose title is blank: the registry derives it from the prompt's first non-empty line (whitespace collapsed, cut to 60 characters with `...`), persists it, and emits `session.renamed` through the same rename path a manual rename uses. A title already set is never overwritten, and an all-blank prompt derives nothing.
+- Auto-title. The first prompt with text names a session whose title is blank: the registry derives it from the prompt's first non-empty line (whitespace collapsed, cut to 60 characters with `...`), persists it, and emits `session.renamed` through the same rename path a manual rename uses. A title already set is never overwritten, and an all-blank prompt derives nothing. After the derived rename, a best-effort one-shot `haiku` query drafts a better title from the first 500 characters of the prompt (`maxTurns: 1`, no tools); a reply whose first line is usable (whitespace collapsed, cut to 80 characters) replaces the derived title only while the record still carries it — a user rename or a newer title wins — and persists + emits `session.renamed` like any rename. Every failure, including the 30-second timeout, is silent (`console.debug`) and leaves the derived title.
 - One runner per session, created on first prompt and memoized as a promise so two concurrent prompts cannot spawn two processes. The CLI path is resolved when the runner is created, not at boot, so a changed `claudeBinary` applies to the next session without a restart. A failed runner creation is not memoized; the next prompt retries.
 - Streaming input. The runner keeps one `query()` open across turns and feeds prompts through an async-iterable input queue the SDK pulls from. One turn at a time: a prompt sent while a turn runs waits in a FIFO and starts the next turn, so the translator always owns exactly one open turn.
 - A turn settles on the SDK `result` (`session.step.ended` + `session.execution.succeeded`, or the failure pair), on an interrupt, on a transport failure, or on an idle reap.
@@ -123,7 +132,6 @@ All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so
 ## Known v1 limitations
 
 - Permission mode is fixed at the SDK's `'default'`; there is no plan / acceptEdits / bypass switch, and no UI for one.
-- No usage or cost display. Session records carry `cost: 0` and zero tokens (the UI's `Session` requires the fields); per-message cost and tokens from the SDK result are recorded in the transcript, but v1 surfaces no session-level usage view for Claude sessions.
 - The prompt route accepts files, agent mentions, skills, metadata, and a delivery mode, but v1 carries only the text, the client-minted message id, and the context admitted through `session.synthetic` to the runner; files, agent mentions, skills, metadata, and delivery are dropped.
 - `POST /api/session/:id/agent` records the selection and emits `session.agent.selected`, but the runner's step events always report the translator's fixed agent (`claude`).
 - SSE: Claude frames ride every `/api/event` stream, not only global ones — the proxy filters by session id, not by directory, so a directory-scoped stream also carries Claude frames of other directories. This is deliberate: a Claude session has no OpenCode upstream of its own (see `../opencode/DOCUMENTATION.md`).
@@ -134,7 +142,7 @@ All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so
 
 - UI controls: the backend picker, the Claude model control, and the sidebar badge live in `packages/ui` (`packages/ui/src/lib/sessionBackend.ts` holds the backend header constants, the static model alias list, and the record checks).
 - The provider/model catalog: the module serves no provider or model route. The UI's Claude model control uses its own static alias list (`opus`, `sonnet`, `haiku`, `fable`); a session's model ref is stored on the record as `{ providerID: 'claude-code', id: '<alias>' }`.
-- Quota, cost, and usage reporting.
+- Provider quota and spend views: the module reports a Claude session's own running cost and tokens (`session.usage.updated`); quota stays OpenCode-only.
 - The OpenCode proxy and the event hub: this module injects events and answers a route subset; it never forwards or owns OpenCode transport (`../opencode/DOCUMENTATION.md`, `../event-stream/DOCUMENTATION.md`).
 - OpenChamber session metadata storage for OpenCode sessions (`../openchamber-sessions/DOCUMENTATION.md`); this module only answers that route for Claude sessions through its injected adapter.
 

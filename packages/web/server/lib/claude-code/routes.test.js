@@ -28,6 +28,7 @@ const createRegistry = (overrides = {}) => {
     removeSession: record('removeSession', undefined),
     moveSession: record('moveSession', undefined),
     sendPrompt: record('sendPrompt', { id: 'msg_1' }),
+    generate: record('generate', { text: 'Generated text' }),
     synthetic: record('synthetic', { id: 'msg_synth_1', type: 'synthetic', text: 'Context' }),
     interrupt: record('interrupt', { interrupted: true }),
     switchModel: record('switchModel', undefined),
@@ -78,12 +79,13 @@ describe('claude session routes', () => {
       await request(app).post(`/api/session/${session}/move`).send({ directory: '/repo/other' }).expect(418);
       await request(app).post(`/api/session/${session}/model`).send({ model: { id: 'opus', providerID: 'claude-code' } }).expect(418);
       await request(app).post(`/api/session/${session}/agent`).send({ agent: 'build' }).expect(418);
+      await request(app).post(`/api/session/${session}/generate`).send({ prompt: 'Hi' }).expect(418);
       await request(app).post(`/api/session/${session}/synthetic`).send({ text: 'context' }).expect(418);
       await request(app).post(`/api/session/${session}/interrupt`).expect(418);
       await request(app).get(`/api/session/${session}/message`).expect(418);
       await request(app).post(`/api/session/${session}/permission/perm_1/reply`).send({ decision: 'once' }).expect(418);
 
-      expect(terminal).toHaveLength(10);
+      expect(terminal).toHaveLength(11);
       expect(calls).toEqual([]);
     });
 
@@ -224,6 +226,55 @@ describe('claude session routes', () => {
       const response = await request(app).post('/api/session/ses_claude_1/interrupt').expect(200);
 
       expect(response.body).toEqual({ interrupted: false });
+    });
+  });
+
+  describe('generate', () => {
+    test('forwards the prompt and answers the data envelope', async () => {
+      const { app, calls } = createApp();
+
+      const response = await request(app)
+        .post('/api/session/ses_claude_1/generate')
+        .send({ prompt: 'Draft a commit message' })
+        .expect(200);
+
+      expect(calls).toEqual([['generate', 'ses_claude_1', 'Draft a commit message']]);
+      expect(response.body).toEqual({ data: { text: 'Generated text' } });
+    });
+
+    test('rejects a missing or blank prompt', async () => {
+      const { app, calls } = createApp();
+
+      const missing = await request(app)
+        .post('/api/session/ses_claude_1/generate')
+        .send({})
+        .expect(400);
+      const blank = await request(app)
+        .post('/api/session/ses_claude_1/generate')
+        .send({ prompt: '   ' })
+        .expect(400);
+
+      expect(missing.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      expect(blank.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      expect(calls).toEqual([]);
+    });
+
+    test('maps a generation failure to the declared tagged 503', async () => {
+      const { app } = createApp({
+        generate: async () => {
+          throw new Error('Claude Code generate failed: process exited');
+        },
+      });
+
+      const response = await request(app)
+        .post('/api/session/ses_claude_1/generate')
+        .send({ prompt: 'Hi' })
+        .expect(503);
+
+      expect(response.body).toMatchObject({
+        _tag: 'ServiceUnavailableError',
+        message: 'Claude Code generate failed: process exited',
+      });
     });
   });
 
@@ -452,6 +503,9 @@ describe('claude session routes', () => {
       });
       expect(admitted).toEqual({ id: 'msg_synth_1', type: 'synthetic', text: 'Context' });
 
+      const generated = await client.session.generate({ sessionID: 'ses_claude_client', prompt: 'Draft it' });
+      expect(generated).toEqual({ text: 'Generated text' });
+
       const interrupted = await client.session.interrupt({ sessionID: 'ses_claude_client' });
       expect(interrupted).toEqual({ interrupted: true });
 
@@ -476,6 +530,7 @@ describe('claude session routes', () => {
           description: 'Selection',
           metadata: undefined,
         }],
+        ['generate', 'ses_claude_client', 'Draft it'],
         ['interrupt', 'ses_claude_client'],
         ['getMessages', 'ses_claude_client', { limit: 10, cursor: undefined, order: undefined }],
         ['replyPermission', 'ses_claude_client', 'perm_1', 'always'],

@@ -18,6 +18,7 @@ import { isString } from '../shared/guards.js';
  *   POST   /api/session/:sessionID/model         session.switchModel -> 204
  *   POST   /api/session/:sessionID/agent         session.switchAgent -> 204
  *   POST   /api/session/:sessionID/prompt        session.prompt      -> 200 { data }
+ *   POST   /api/session/:sessionID/generate      session.generate    -> 200 { data }
  *   POST   /api/session/:sessionID/synthetic     session.synthetic   -> 200 { data }
  *   POST   /api/session/:sessionID/interrupt     session.interrupt   -> 200 { interrupted }
  *   GET    /api/session/:sessionID/message       message.list        -> 200 { data, cursor }
@@ -27,8 +28,8 @@ import { isString } from '../shared/guards.js';
  * node_modules/@opencode/client/dist/chunks/service-probe-9h52wrcy.js
  * (`session.create`, `session.get`, `session.update`, `session.remove`,
  * `session.move`, `session.switchModel`, `session.switchAgent`,
- * `session.prompt`, `session.synthetic`, `session.interrupt`, `message.list`,
- * `permission.reply`).
+ * `session.prompt`, `session.generate`, `session.synthetic`,
+ * `session.interrupt`, `message.list`, `permission.reply`).
  * Single-record answers arrive wrapped in `{ data }`; `interrupt` is the one
  * answer the SDK reads raw (`SessionInterruptResponse`), and `message.list`
  * keeps the `{ data, cursor }` page (`SessionMessagesResponse`).
@@ -36,6 +37,9 @@ import { isString } from '../shared/guards.js';
  * Errors use OpenCode's tagged body `{ _tag, message }`: the generated client
  * rethrows the parsed body for a declared status, and the shared UI maps the
  * tag back to a status (STATUS_BY_TAG in packages/ui/src/lib/opencode/client.ts).
+ * `session.generate` declares 400/401/404/503, so its runtime failures answer
+ * the tagged 503 (`ServiceUnavailableError`); the route validates the prompt
+ * itself and answers 400 for a missing one.
  *
  * Every session-scoped route answers only for a session the registry owns
  * (`registry.isClaudeSession`); anything else leaves the router through
@@ -49,6 +53,7 @@ import { isString } from '../shared/guards.js';
  *   removeSession: (sessionID: string) => void | Promise<void>,
  *   moveSession: (sessionID: string, directory: string) => void | Promise<void>,
  *   sendPrompt: (sessionID: string, input: { text: string, id?: string, files?: unknown[], agents?: unknown[], skills?: unknown[], metadata?: object, delivery?: string }) => object | Promise<object>,
+ *   generate: (sessionID: string, prompt: string) => { text: string } | Promise<{ text: string }>,
  *   synthetic: (sessionID: string, input: { id?: string, text: string, description?: string, metadata?: object }) => object | null | Promise<object | null>,
  *   interrupt: (sessionID: string) => boolean | { interrupted?: boolean } | Promise<boolean | { interrupted?: boolean }>,
  *   switchModel: (sessionID: string, model: object) => void | Promise<void>,
@@ -208,6 +213,24 @@ export function createClaudeRoutes({ registry }) {
         delivery: body.delivery,
       }),
     });
+  }));
+
+  // session.generate — POST /api/session/:sessionID/generate. One transient
+  // text in the session's context (a commit message, a summary): one one-shot
+  // SDK query, answered as the text, recorded nowhere. The descriptor declares
+  // 400/401/404/503, so a runtime failure answers the tagged 503.
+  router.post('/session/:sessionID/generate', forClaudeSession(async (req, res) => {
+    const prompt = req.body?.prompt;
+    if (!isString(prompt) || prompt.trim() === '') {
+      return sendError(res, 400, 'InvalidRequestError', 'prompt is required');
+    }
+    let result;
+    try {
+      result = await registry.generate(req.params.sessionID, prompt);
+    } catch (error) {
+      return sendError(res, 503, 'ServiceUnavailableError', error?.message ?? 'Claude Code generate failed');
+    }
+    res.status(200).json({ data: result });
   }));
 
   // session.synthetic — POST /api/session/:sessionID/synthetic. Context the UI

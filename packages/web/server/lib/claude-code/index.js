@@ -15,14 +15,19 @@
  *     mounted by the server ahead of the OpenCode proxy;
  *   - the wire events of the registry itself (`session.created`,
  *     `session.renamed`, `session.moved`, `session.deleted`, model/agent
- *     selection, metadata updates), injected into the server's global hub so
- *     every client sees them next to the OpenCode events.
+ *     selection, metadata updates, usage updates), injected into the server's
+ *     global hub so every client sees them next to the OpenCode events;
+ *   - one-shot SDK queries that never enter history: `session.generate` (a
+ *     transient text the caller asked for) and the best-effort title
+ *     generation after a session's first prompt.
  *
  * Records are the wire shape the shared UI reads: `projectSession`
  * (packages/ui/src/lib/opencode/projection.ts) turns `location.directory` into
  * the domain `Session.directory`, and `projectID` is derived with the same
  * helper the projects runtime uses, so a Claude session groups into its
- * project exactly like an OpenCode one.
+ * project exactly like an OpenCode one. A record carries the session's running
+ * usage (`cost`, `tokens`): the SDK's cumulative cost is replaced, per-turn
+ * token counts accumulate, and the result is persisted with the index.
  *
  * `getMessages` answers from the transcript and works without a runner: after
  * a restart the history is on disk, and a session only spawns a `claude`
@@ -40,7 +45,7 @@ import { isPlainObject, isString } from '../shared/guards.js';
 import { resolveClaudeCliPath } from './cli-resolution.js';
 import { createMessageId, createSessionId } from './ids.js';
 import { createClaudeRoutes } from './routes.js';
-import { createRunnerFactory } from './runner.js';
+import { createRunnerFactory, defaultSpawnQuery } from './runner.js';
 import { createTranscript } from './transcript.js';
 import { createTranslator } from './translator.js';
 
@@ -51,9 +56,6 @@ const PROVIDER_ID = 'claude-code';
 // the plain-JS server cannot import from packages/ui, so keep the two in sync.
 const CLAUDE_MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
 const DEFAULT_CLAUDE_MODEL = 'opus';
-// A fresh session has no usage yet; `session.created` carries the zeroes the
-// UI's `Session` requires (cost and tokens are non-optional there).
-const ZERO_TOKENS = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
 // Session ids name transcript files, so an id that could escape the sessions
 // directory (or name a file Windows rejects) is refused at the door.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -112,22 +114,81 @@ const withBackendMetadata = (metadata) => {
 
 const numberOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
 
-// A derived title is the first prompt's first line, collapsed and cut to this
-// many characters (plus an ellipsis), so a sidebar entry stays readable.
-const TITLE_MAX_LENGTH = 60;
+// A fresh session has no usage yet; the wire record the UI projects requires
+// cost and tokens (they are non-optional on its `Session`), so every record
+// starts at zero and the SDK's results accumulate from there.
+const zeroTokens = () => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } });
 
 /**
- * The title a session takes from its first prompt: the first non-empty line,
- * trimmed and whitespace-collapsed, cut to `TITLE_MAX_LENGTH` characters with
- * `...` when longer. An all-blank prompt derives nothing (`null`), so the
- * title stays empty.
+ * A stored `tokens` value in the runtime's own shape: every field a finite
+ * number or 0, so a legacy or malformed entry reads like a fresh session's.
  */
-const deriveTitleFromPrompt = (text) => {
+const tokensFromStored = (value) => {
+  const source = isPlainObject(value) ? value : {};
+  const cache = isPlainObject(source.cache) ? source.cache : {};
+  return {
+    input: numberOr(source.input, 0),
+    output: numberOr(source.output, 0),
+    reasoning: numberOr(source.reasoning, 0),
+    cache: { read: numberOr(cache.read, 0), write: numberOr(cache.write, 0) },
+  };
+};
+
+/**
+ * Token usage adds up per field across a session's turns; a result that names
+ * no field adds zero. The cost of a Claude session is the SDK's own running
+ * total (`total_cost_usd`), so it is replaced (see `onUsage`), never added.
+ */
+const accumulateTokens = (current, delta) => {
+  const source = isPlainObject(delta) ? delta : {};
+  const cache = isPlainObject(source.cache) ? source.cache : {};
+  return {
+    input: current.input + numberOr(source.input, 0),
+    output: current.output + numberOr(source.output, 0),
+    reasoning: current.reasoning + numberOr(source.reasoning, 0),
+    cache: {
+      read: current.cache.read + numberOr(cache.read, 0),
+      write: current.cache.write + numberOr(cache.write, 0),
+    },
+  };
+};
+
+// A derived title is the first prompt's first line, collapsed and cut to this
+// many characters (plus an ellipsis), so a sidebar entry stays readable. A
+// model-generated title may run a little longer and is cut without one.
+const TITLE_MAX_LENGTH = 60;
+const GENERATED_TITLE_MAX_LENGTH = 80;
+// One-shot queries never hold a request open forever: `session.generate`
+// answers within 60 s, and the best-effort title generation gives up after
+// 30 s and stays silent.
+const GENERATE_TIMEOUT_MS = 60_000;
+const TITLE_GENERATION_TIMEOUT_MS = 30_000;
+// The title prompt carries the first user text cut to this many characters.
+const TITLE_PROMPT_MAX_CHARS = 500;
+
+/** The first non-empty line of `text`, trimmed and whitespace-collapsed, or `null` when there is none. */
+const firstLineOf = (text) => {
   if (!isString(text)) return null;
   const firstLine = text.split('\n').map((line) => line.trim()).find((line) => line !== '');
   if (!firstLine) return null;
-  const collapsed = firstLine.replace(/\s+/g, ' ');
-  return collapsed.length > TITLE_MAX_LENGTH ? `${collapsed.slice(0, TITLE_MAX_LENGTH)}...` : collapsed;
+  return firstLine.replace(/\s+/g, ' ');
+};
+
+/**
+ * The title a session takes from its first prompt: the first non-empty line,
+ * cut to `TITLE_MAX_LENGTH` characters with `...` when longer. An all-blank
+ * prompt derives nothing (`null`), so the title stays empty.
+ */
+const deriveTitleFromPrompt = (text) => {
+  const line = firstLineOf(text);
+  if (line === null) return null;
+  return line.length > TITLE_MAX_LENGTH ? `${line.slice(0, TITLE_MAX_LENGTH)}...` : line;
+};
+
+/** The title a one-shot model query produced: the reply's first line, cut to `GENERATED_TITLE_MAX_LENGTH` characters. */
+const generatedTitleFromText = (text) => {
+  const line = firstLineOf(text);
+  return line === null ? null : line.slice(0, GENERATED_TITLE_MAX_LENGTH);
 };
 
 /**
@@ -143,6 +204,10 @@ const deriveTitleFromPrompt = (text) => {
  *     session. May be sync or async.
  *   createRunnerFactoryImpl?: object | (() => object), Test seam: the runner
  *     factory (or a function building one). Defaults to `createRunnerFactory()`.
+ *   spawnQueryImpl?: (params: { prompt: string, options: object }) => object | Promise<object>,
+ *     Test seam: the one-shot SDK `query()` spawn used by `session.generate`
+ *     and generated titles, and passed to a runner factory this runtime
+ *     builds. Defaults to the runner factory's own lazy SDK import.
  *   resolveCliPath?: () => string | null | Promise<string | null>, Test seam
  *     for the CLI lookup. Defaults to `resolveClaudeCliPath` against
  *     `getSettings()`.
@@ -164,6 +229,7 @@ export function createClaudeCodeRuntime({
   eventHub,
   getSettings,
   createRunnerFactoryImpl = createRunnerFactory,
+  spawnQueryImpl = defaultSpawnQuery,
   resolveCliPath,
   now = Date.now,
 }) {
@@ -177,8 +243,10 @@ export function createClaudeCodeRuntime({
   const baseDir = path.join(dataDir, 'claude-code');
   const indexPath = path.join(baseDir, 'sessions.json');
   const sessionsDir = path.join(baseDir, 'sessions');
+  // A runner factory this runtime builds spawns through the same one-shot
+  // seam, so a test that fakes `spawnQueryImpl` fakes every SDK spawn.
   const runnerFactory = createRunnerFactoryImpl instanceof Function
-    ? createRunnerFactoryImpl()
+    ? createRunnerFactoryImpl({ spawnQuery: spawnQueryImpl })
     : createRunnerFactoryImpl;
   const resolveCli = resolveCliPath ?? (async () => resolveClaudeCliPath({ settings: await getSettings?.() }));
 
@@ -222,6 +290,8 @@ export function createClaudeCodeRuntime({
       title: record.title,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
+      cost: record.cost,
+      tokens: record.tokens,
       model: record.model,
       claudeSessionUuid: record.claudeSessionUuid ?? null,
       metadata: record.metadata,
@@ -271,6 +341,8 @@ export function createClaudeCodeRuntime({
       title: isString(value.title) ? value.title : '',
       createdAt: numberOr(value.createdAt, 0),
       updatedAt: numberOr(value.updatedAt, 0),
+      cost: numberOr(value.cost, 0),
+      tokens: tokensFromStored(value.tokens),
       model: modelRefOf(value.model),
       claudeSessionUuid: isString(value.claudeSessionUuid) ? value.claudeSessionUuid : null,
       metadata: isPlainObject(value.metadata) ? value.metadata : {},
@@ -332,8 +404,8 @@ export function createClaudeCodeRuntime({
       location: { directory: record.directory },
       title: record.title,
       model: { ...record.model },
-      cost: 0,
-      tokens: { ...ZERO_TOKENS, cache: { ...ZERO_TOKENS.cache } },
+      cost: record.cost,
+      tokens: { ...record.tokens, cache: { ...record.tokens.cache } },
       time: { created: record.createdAt, updated: record.updatedAt },
       metadata: record.metadata,
     };
@@ -370,6 +442,8 @@ export function createClaudeCodeRuntime({
       title: isString(input.title) ? input.title : '',
       createdAt,
       updatedAt: createdAt,
+      cost: 0,
+      tokens: zeroTokens(),
       model: modelRefOf(input.model),
       claudeSessionUuid: null,
       metadata: withBackendMetadata(input.metadata),
@@ -507,6 +581,113 @@ export function createClaudeCodeRuntime({
   };
 
   // -------------------------------------------------------------------------
+  // One-shot queries
+  // -------------------------------------------------------------------------
+
+  /**
+   * One one-shot SDK query: spawn it, read the `result` message's text, and
+   * close it. The timeout covers the whole call — including the spawn, whose
+   * late query is closed as soon as it resolves — and rejects with a clear
+   * error, so no `claude` process outlives the call; the loser of the race
+   * keeps a handler attached, so a late failure cannot surface as unhandled.
+   */
+  const runOneShotQuery = async ({ prompt, options, timeoutMs }) => {
+    let query = null;
+    const closeQuery = () => {
+      try {
+        query?.close?.();
+      } catch {
+        // The process may already be gone.
+      }
+    };
+    let expired = false;
+    let timer = null;
+    const timedOut = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        closeQuery();
+        reject(new Error(`did not settle within ${timeoutMs} ms`));
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    const collected = (async () => {
+      query = await spawnQueryImpl({ prompt, options });
+      // The timeout may have fired while the spawn was still starting; close
+      // the late process so it cannot outlive the call.
+      if (expired) {
+        closeQuery();
+        throw new Error(`did not settle within ${timeoutMs} ms`);
+      }
+      for await (const message of query) {
+        if (message?.type === 'result') {
+          // A success result carries the answer; `is_error: true` on it means
+          // the turn ended on an API error and the same field holds the error
+          // text, which must not be handed back as generated text.
+          if (message.is_error !== true && isString(message.result)) return message.result;
+          throw new Error('the Claude Code query failed before returning text');
+        }
+      }
+      throw new Error('the Claude Code query ended before returning a result');
+    })();
+    void collected.catch(() => {});
+    try {
+      return await Promise.race([collected, timedOut]);
+    } finally {
+      clearTimeout(timer);
+      closeQuery();
+    }
+  };
+
+  /**
+   * `session.generate`: one transient text in the session's context, run as a
+   * single one-shot query and recorded nowhere — no runner, no transcript, no
+   * wire event — so the text never enters history. The record's Claude
+   * session id is resumed when there is one, so the generation sees the
+   * session's past; the CLI path is resolved per call like the runner's.
+   */
+  const generate = async (sessionID, prompt) => {
+    const record = requireRecord(sessionID);
+    const cliPath = await resolveCli();
+    const options = {
+      cwd: record.directory,
+      resume: record.claudeSessionUuid || undefined,
+      maxTurns: 1,
+      tools: [],
+    };
+    if (cliPath) options.pathToClaudeCodeExecutable = cliPath;
+    try {
+      return { text: await runOneShotQuery({ prompt, options, timeoutMs: GENERATE_TIMEOUT_MS }) };
+    } catch (error) {
+      throw new Error(`Claude Code generate failed: ${error?.message ?? error}`);
+    }
+  };
+
+  /** The prompt a title generation sends: the instructions plus the user's own text. */
+  const buildTitlePrompt = (text) =>
+    `Reply with a title only: max 6 words, no quotes, no punctuation at the end, same language as the text. Text: ${text.slice(0, TITLE_PROMPT_MAX_CHARS)}`;
+
+  /**
+   * Fire-and-forget: ask a one-shot `haiku` query for a better title than the
+   * prompt's first line, and apply it only while the record still carries the
+   * derived title captured at send time — a user rename or a newer title
+   * wins. Every failure is silent; the derived title stays.
+   */
+  const generateSessionTitle = async (record, derivedTitle, text) => {
+    try {
+      const result = await runOneShotQuery({
+        prompt: buildTitlePrompt(text),
+        options: { cwd: record.directory, maxTurns: 1, tools: [], model: 'haiku' },
+        timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
+      });
+      const title = generatedTitleFromText(result);
+      if (title === null || record.title !== derivedTitle) return;
+      await renameSession(record.id, title);
+    } catch (error) {
+      console.debug(`[claude-code] title generation failed for ${record.id}:`, error?.message ?? error);
+    }
+  };
+
+  // -------------------------------------------------------------------------
   // OpenChamber metadata
   // -------------------------------------------------------------------------
 
@@ -596,6 +777,24 @@ export function createClaudeCodeRuntime({
             console.warn(`[claude-code] could not persist the Claude session id for ${record.id}:`, error?.message ?? error);
           });
         },
+        onUsage: (usage) => {
+          // The SDK's `total_cost_usd` is cumulative across the session's turns
+          // and resumed queries, so the latest value replaces the record's; the
+          // per-turn token counts add up.
+          if (Number.isFinite(usage?.cost)) record.cost = usage.cost;
+          record.tokens = accumulateTokens(record.tokens, usage?.tokens);
+          void persistIndex().catch((error) => {
+            console.warn(`[claude-code] could not persist usage for ${record.id}:`, error?.message ?? error);
+          });
+          emitWire(
+            wireEvent('session.usage.updated', {
+              sessionID: record.id,
+              cost: record.cost,
+              tokens: { ...record.tokens, cache: { ...record.tokens.cache } },
+            }, record.directory),
+            record,
+          );
+        },
         onIdle: () => {
           if (runners.get(record.id) === entry) runners.delete(record.id);
         },
@@ -673,7 +872,12 @@ export function createClaudeCodeRuntime({
     // persistence, so two concurrent first prompts cannot both name it.
     if (record.title.trim() === '') {
       const title = deriveTitleFromPrompt(input.text);
-      if (title !== null) await renameSession(record.id, title);
+      if (title !== null) {
+        await renameSession(record.id, title);
+        // A model-written title beats the prompt's first line when it arrives;
+        // it is best effort and loses to any later rename (see the helper).
+        void generateSessionTitle(record, title, input.text);
+      }
     }
     const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
     // v1 carries the text, the client-minted message id, and the synthetic
@@ -733,6 +937,7 @@ export function createClaudeCodeRuntime({
     removeSession,
     moveSession,
     sendPrompt,
+    generate,
     synthetic,
     interrupt,
     switchModel,
