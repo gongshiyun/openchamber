@@ -52,6 +52,19 @@ export const starterKey = (ref: DraftStarterRef): string => `${ref.type}:${ref.n
 export const sameStarter = (a: DraftStarterRef, b: DraftStarterRef): boolean =>
     a.type === b.type && a.name === b.name;
 
+/**
+ * The starter chips a Claude draft must not offer. `/craft-goal` builds a Goal,
+ * which only OpenCode sessions run; the chip would arm a goal no backend
+ * applies. Everything else the starter list holds is a plain prompt.
+ */
+export const filterDraftStartersForClaude = <T extends { ref: DraftStarterRef }>(
+    items: readonly T[],
+    claudeBackend: boolean,
+): T[] =>
+    claudeBackend
+        ? items.filter((item) => !(item.ref.type === 'command' && item.ref.name === 'craft-goal'))
+        : [...items];
+
 // Turn a command/skill name into a human chip label: "/simplify-code" -> "Simplify code".
 export const normalizeStarterLabel = (name: string): string => {
     const base = name

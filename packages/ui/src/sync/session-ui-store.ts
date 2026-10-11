@@ -226,13 +226,18 @@ export async function routeMessage(params: {
   const sendFiles = [...(params.files ?? []), ...contextFiles]
 
   if (params.inputMode === "shell") {
-    await opencodeClient.shellSession({
-      runtimeKey: params.runtimeKey,
-      sessionId: params.sessionId,
-      directory: requestDirectory,
-      command: params.content,
-    })
-    return 'shell'
+    // Claude has no shell route: a send that still arrives in shell mode (a
+    // stale composer, another surface) goes out as a normal prompt instead.
+    const shellTarget = findLiveSessionRecord(params.sessionId, requestDirectory)
+    if (!(shellTarget && isClaudeBackendSession(shellTarget))) {
+      await opencodeClient.shellSession({
+        runtimeKey: params.runtimeKey,
+        sessionId: params.sessionId,
+        directory: requestDirectory,
+        command: params.content,
+      })
+      return 'shell'
+    }
   }
 
   let skills = params.skills
@@ -1814,10 +1819,20 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const draft = options?.draftSnapshot ?? get().newSessionDraft
       const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
 
+      // The send target's backend, known before anything is consumed: a Claude
+      // session (or a draft about to become one) runs no goal loop, so an arm
+      // the composer still held is consumed and dropped rather than applied.
+      const targetSessionId = capturedTarget?.sessionId ?? options?.sessionId ?? get().currentSessionId
+      const targetSession = targetSessionId
+        ? findLiveSessionRecord(targetSessionId, capturedTarget?.directory ?? options?.directory)
+        : undefined
+      const targetIsClaude = targetSession !== undefined && isClaudeBackendSession(targetSession)
+      const draftIsClaude = Boolean(draft?.open && draft.claudeBackend)
+
       const goalArm = inputMode !== "shell" && content.trim().length > 0
         ? useSessionGoalArmStore.getState().consume()
         : { armed: false, objectiveOverride: null }
-      const goalArmed = goalArm.armed
+      const goalArmed = goalArm.armed && !targetIsClaude && !draftIsClaude
       if (goalArmed) {
         // Teach the agent the goal protocol from turn one — without this it
         // only learns about goal mode from the first server continuation.
@@ -1940,15 +1955,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }
 
       // ---- Existing session ----
-      const targetSessionId = capturedTarget?.sessionId ?? options?.sessionId ?? get().currentSessionId
       // A Claude session runs on its own backend model: the composer's OpenCode
       // pick and agent are not selections for it, so they are neither recorded
       // nor sent (see resolveSendSelection). Its own record is the source of
       // truth, and the Claude model control switches the alias explicitly.
-      const targetSession = targetSessionId
-        ? findLiveSessionRecord(targetSessionId, capturedTarget?.directory ?? options?.directory)
-        : undefined
-      const targetIsClaude = targetSession !== undefined && isClaudeBackendSession(targetSession)
       const sessionAgentSelection = targetSessionId
         ? useSelectionStore.getState().getSessionAgentSelection(targetSessionId)
         : null

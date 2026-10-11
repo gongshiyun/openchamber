@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { commandMatchesSearch, mergeCommandAutocompleteItems, rankCommandAutocompleteItems } from '../commandAutocompleteItems';
+import { commandMatchesSearch, isOpenCodeOnlyCommand, mergeCommandAutocompleteItems, rankCommandAutocompleteItems } from '../commandAutocompleteItems';
 
 interface Item {
   name: string;
@@ -82,6 +82,28 @@ describe('mergeCommandAutocompleteItems', () => {
 
   test('handles empty inputs', () => {
     expect(mergeCommandAutocompleteItems([], [])).toEqual([]);
+  });
+});
+
+describe('isOpenCodeOnlyCommand', () => {
+  test('every OpenCode-source command is OpenCode-only', () => {
+    expect(isOpenCodeOnlyCommand({ name: 'deploy', source: 'opencode' })).toBe(true);
+    expect(isOpenCodeOnlyCommand({ name: 'review', source: 'opencode' })).toBe(true);
+  });
+
+  test('the built-ins that execute session.command or OpenCode fork/compact are OpenCode-only', () => {
+    expect(isOpenCodeOnlyCommand({ name: 'init', source: 'openchamber' })).toBe(true);
+    expect(isOpenCodeOnlyCommand({ name: 'review', source: 'openchamber' })).toBe(true);
+    expect(isOpenCodeOnlyCommand({ name: 'compact', source: 'openchamber' })).toBe(true);
+    expect(isOpenCodeOnlyCommand({ name: 'fork', source: 'openchamber' })).toBe(true);
+    expect(isOpenCodeOnlyCommand({ name: 'btw', source: 'openchamber' })).toBe(true);
+  });
+
+  test('prompt-pair built-ins, local UI actions and extension commands stay', () => {
+    for (const name of ['summary', 'workspace-review', 'plan-feature', 'craft-goal', 'schedule-task', 'catch-up', 'debug', 'weigh', 'explore', 'undo', 'redo', 'timeline', 'handoff-review']) {
+      expect(isOpenCodeOnlyCommand({ name, source: 'openchamber' })).toBe(false);
+    }
+    expect(isOpenCodeOnlyCommand({ name: 'deploy', source: 'extension' })).toBe(false);
   });
 });
 

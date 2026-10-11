@@ -40,6 +40,9 @@ import { useSourceControlAuthEntry, useSourceControlAuthStore } from '@/stores/u
 import { GITHUB_SOURCE_CONTROL_IDENTITY } from '@/lib/source-control/identity';
 import { useRepositoryReferenceProvider } from '@/components/references/referenceSources';
 import { normalizeContextPanelDirectoryKey, useUIStore } from '@/stores/useUIStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { useGuestSurfaces } from '@/hooks/useGuestSurfaces';
 import { useGuestBadgeStore } from '@/lib/guests/badge-store';
 import { isPluginContextPanelMode, pluginIdFromMode } from '@/lib/surfaces/modes';
@@ -189,6 +192,14 @@ export const ContextPanelRail: React.FC = () => {
   const repositoryProvider = useRepositoryReferenceProvider(directoryKey || null);
   const { screenWidth } = useDeviceInfo();
   const gitStatus = useGitStatus(directoryKey || null);
+  // A Claude session cannot open or generate a walkthrough; its rail entry is
+  // hidden while that session is the open one. Same session source as the
+  // sidebar badge and the composer controls.
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const currentSessionIsClaude = useGlobalSessionsStore((state) => {
+    const session = currentSessionId ? state.entityById.get(currentSessionId) : undefined;
+    return session !== undefined && isClaudeBackendSession(session);
+  });
 
   const surfaceSwitchPrefix = React.useMemo(
     () => getEffectiveShortcutPrefix('switch_context_surface', shortcutOverrides),
@@ -287,9 +298,10 @@ export const ContextPanelRail: React.FC = () => {
       screenWidth,
       tabs,
       sourceControlConnected,
+      hideWalkthrough: currentSessionIsClaude,
       extras: guestSurfaces,
     }).map((surface) => (surface.id === 'pr' && repositoryProvider === 'gitlab' ? { ...surface, icon: 'gitlab' as const } : surface));
-  }, [contextRailHiddenSurfaces, contextRailOrder, guestSurfaces, planModeEnabled, repositoryProvider, screenWidth, sourceControlConnected, tabs]);
+  }, [contextRailHiddenSurfaces, contextRailOrder, currentSessionIsClaude, guestSurfaces, planModeEnabled, repositoryProvider, screenWidth, sourceControlConnected, tabs]);
 
   // A surface whose integration disconnected closes rather than lingering as
   // an active panel with no rail icon.

@@ -33,6 +33,8 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useDeviceInfo } from '@/lib/device';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { filterDraftStartersForClaude } from '@/lib/draftStarters';
 import {
     useDraftStarters,
     type ResolvedStarter,
@@ -277,6 +279,17 @@ const DraftPresetChipsContent: React.FC<DraftPresetChipsProps> = ({ onSubmit, cl
     const { global, project, pinnable, ensureLoaded, addStarter, removeStarter, reorder, shareStarter, unshareStarter } = useDraftStarters();
     const { isMobile } = useDeviceInfo();
     const [isDragging, setIsDragging] = React.useState(false);
+    // A Claude draft cannot run a Goal: the chip would arm one no backend
+    // applies, so it leaves the row (a pinned copy in either group).
+    const draftClaudeBackend = useSessionUIStore((state) => Boolean(state.newSessionDraft?.claudeBackend));
+    const visibleGlobal = React.useMemo(
+        () => filterDraftStartersForClaude(global, draftClaudeBackend),
+        [draftClaudeBackend, global],
+    );
+    const visibleProject = React.useMemo(
+        () => filterDraftStartersForClaude(project, draftClaudeBackend),
+        [draftClaudeBackend, project],
+    );
 
     const sensors = useSensors(
         // Desktop: start dragging after a small move so a click still submits.
@@ -287,8 +300,8 @@ const DraftPresetChipsContent: React.FC<DraftPresetChipsProps> = ({ onSubmit, cl
 
     const chipById = React.useCallback(
         (id: string): ResolvedStarter | undefined =>
-            global.find((i) => i.id === id) ?? project.find((i) => i.id === id),
-        [global, project],
+            visibleGlobal.find((i) => i.id === id) ?? visibleProject.find((i) => i.id === id),
+        [visibleGlobal, visibleProject],
     );
 
     const handleDragStart = () => setIsDragging(true);
@@ -325,17 +338,17 @@ const DraftPresetChipsContent: React.FC<DraftPresetChipsProps> = ({ onSubmit, cl
             onDragEnd={handleDragEnd}
         >
             <div className={cn('flex flex-wrap items-center justify-center gap-2', className)}>
-                {global.length > 0 ? (
+                {visibleGlobal.length > 0 ? (
                     <StarterGroup
-                        items={global}
+                        items={visibleGlobal}
                         onSubmit={onSubmit}
                         onRemove={(item) => removeStarter('global', item.ref)}
                         hideRemove={isMobile}
                     />
                 ) : null}
-                {project.length > 0 ? (
+                {visibleProject.length > 0 ? (
                     <StarterGroup
-                        items={project}
+                        items={visibleProject}
                         onSubmit={onSubmit}
                         onRemove={(item) => removeStarter('project', item.ref)}
                         onToggleShared={(item) => (item.shared ? unshareStarter(item.ref) : shareStarter(item.ref))}

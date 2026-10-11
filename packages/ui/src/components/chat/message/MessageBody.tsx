@@ -26,6 +26,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useChatSessionSelection } from '../chatColumnSession';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import type { Session } from '@/lib/opencode/model';
 import { getMultiRunIdentity } from '@/lib/multirun/identity';
 import { openParallelComposer } from '@/lib/multirun/openParallelComposer';
@@ -1289,7 +1290,13 @@ const AssistantMessageBody = React.memo(({
     const isVSCode = isVSCodeRuntime();
     const isMiniChatSurface = chatSurfaceMode === 'mini-chat';
     const canUseProjectPlanActions = !isVSCode && !isMiniChatSurface && !isMobile;
-    const canShowMultiRunAction = !isVSCode && !isMiniChatSurface && !isMobile;
+    // A Claude session cannot be forked or multi-run (both drive OpenCode
+    // session APIs), so the branch menu and its actions stay off for it.
+    const sessionIsClaude = useGlobalSessionsStore((state) => {
+        const session = sessionId ? state.entityById.get(sessionId) : undefined;
+        return session !== undefined && isClaudeBackendSession(session);
+    });
+    const canShowMultiRunAction = !isVSCode && !isMiniChatSurface && !isMobile && !sessionIsClaude;
 
     const messagePreviewUrl = React.useMemo(() => {
         if (isVSCode || isMobile || isMiniChatSurface) {
@@ -2230,7 +2237,7 @@ const AssistantMessageBody = React.memo(({
                 onSelect: () => { onToggleContextPin(); },
             });
         }
-        if (!isMiniChatSurface && !isReviewSessionView) {
+        if (!isMiniChatSurface && !isReviewSessionView && !sessionIsClaude) {
             actions.push({
                 id: 'fork-from-here',
                 label: t('chat.messageBody.actions.fork'),
@@ -2250,7 +2257,7 @@ const AssistantMessageBody = React.memo(({
             }
         }
         return actions;
-    }, [assistantPlanText, canUseProjectPlanActions, contextPinPending, contextPinned, currentProjectRef, extraActions, handleForkClick, handleForkFromHere, handleSaveAsPlanClick, hasCopyableText, isFooterTTSPlaying, isMiniChatSurface, isReviewSessionView, onCopyLink, onCopyMessage, onToggleContextPin, playFooterTTS, reviewTransferAction, shareMessageAsImage, showMessageTTSButtons, stopFooterTTS, t]);
+    }, [assistantPlanText, canUseProjectPlanActions, contextPinPending, contextPinned, currentProjectRef, extraActions, handleForkClick, handleForkFromHere, handleSaveAsPlanClick, hasCopyableText, isFooterTTSPlaying, isMiniChatSurface, isReviewSessionView, sessionIsClaude, onCopyLink, onCopyMessage, onToggleContextPin, playFooterTTS, reviewTransferAction, shareMessageAsImage, showMessageTTSButtons, stopFooterTTS, t]);
 
     const finalTurnActionButtons = (
         <>
@@ -2323,7 +2330,7 @@ const AssistantMessageBody = React.memo(({
                     <TooltipContent sideOffset={6}>{t(contextPinned ? 'chat.messageBody.actions.unpinContext' : 'chat.messageBody.actions.pinContext')}</TooltipContent>
                 </Tooltip>
             ) : null}
-            {!isMiniChatSurface && !isReviewSessionView ? (
+            {!isMiniChatSurface && !isReviewSessionView && !sessionIsClaude ? (
                 <DropdownMenu>
                     <Tooltip>
                         <TooltipTrigger asChild>

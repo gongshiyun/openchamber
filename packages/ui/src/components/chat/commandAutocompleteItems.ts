@@ -67,6 +67,22 @@ export function commandMatchesSearch(command: CommandAutocompleteSearchItem, que
     || Boolean(command.searchAliases?.some((alias) => fuzzyMatch(alias, query)));
 }
 
+/**
+ * Menu entries the Claude backend cannot run. OpenCode's `session.command`
+ * route serves custom commands and the `init`/`review` built-ins (404 on
+ * Claude), and the composer's own compact/fork/btw actions drive OpenCode
+ * session APIs. The prompt-pair built-ins and the local UI actions are text or
+ * state the composer owns, so they stay.
+ */
+export function isOpenCodeOnlyCommand(command: { name: string; source: string }): boolean {
+  if (command.source === 'opencode') return true;
+  return command.name === 'init'
+    || command.name === 'review'
+    || command.name === 'compact'
+    || command.name === 'fork'
+    || command.name === 'btw';
+}
+
 export function rankCommandAutocompleteItems<T extends CommandAutocompleteSearchItem>(
   commands: T[],
   query: string,

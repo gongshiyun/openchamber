@@ -8,6 +8,8 @@ import { setSessionGoalStatus } from '@/lib/sessionGoalActions';
 import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/i18n';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 
 interface SessionGoalRowProps {
   sessionId: string | null;
@@ -23,6 +25,12 @@ export const SessionGoalRow: React.FC<SessionGoalRowProps> = React.memo(({ sessi
   const { goal, enabled } = useSessionGoal(sessionId ?? '', directory);
   const objectiveContent = useGoalObjectiveContent(sessionId ?? '', goal);
   const sessionStatus = useSessionStatus(sessionId ?? '', directory);
+  // A Claude session runs no goal loop: nothing can arm a goal for it, and a
+  // leftover one would only be misleading here.
+  const sessionIsClaude = useGlobalSessionsStore((state) => {
+    const session = sessionId ? state.entityById.get(sessionId) : undefined;
+    return session !== undefined && isClaudeBackendSession(session);
+  });
   const [busy, setBusy] = React.useState(false);
 
   const handleToggleStatus = React.useCallback(async (nextStatus: 'active' | 'paused') => {
@@ -38,7 +46,7 @@ export const SessionGoalRow: React.FC<SessionGoalRowProps> = React.memo(({ sessi
     }
   }, [sessionId, directory, busy, t]);
 
-  if (!sessionId || !enabled || !goal) {
+  if (!sessionId || sessionIsClaude || !enabled || !goal) {
     return null;
   }
 

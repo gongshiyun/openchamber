@@ -60,7 +60,7 @@ const claudeRecord: Session = {
   cost: 0,
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   time: { created: 1, updated: 2 },
-  metadata: { openchamber: { backend: 'claude' } },
+  metadata: { openchamber: { backend: 'claude', permissionMode: 'acceptEdits', effort: 'high' } },
   model: { providerID: 'claude-code', id: 'sonnet' },
 };
 
@@ -216,6 +216,9 @@ test('a Claude session shows the Claude model control and no OpenCode model/agen
     expect(claudeControl).not.toBeNull();
     expect(claudeControl?.textContent).toContain('Sonnet');
     expect(container.querySelector('.model-controls__model-trigger')).toBeNull();
+    // The Claude session's own controls read the record's metadata.
+    expect(container.querySelector('[aria-label="Permission mode"]')?.textContent).toContain('Accept edits');
+    expect(container.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High');
   } finally {
     await cleanup();
   }
@@ -225,6 +228,8 @@ test('an OpenCode session keeps the OpenCode model controls', async () => {
   const { container, cleanup } = await renderFooter(openCodeRecord);
   try {
     expect(container.querySelector('[aria-label="Claude model"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Permission mode"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Reasoning effort"]')).toBeNull();
     expect(container.querySelector('.model-controls__model-trigger')).not.toBeNull();
   } finally {
     await cleanup();
@@ -240,5 +245,27 @@ test('a pinned Claude session swaps its controls too', async () => {
     expect(container.querySelector('.model-controls__model-trigger')).toBeNull();
   } finally {
     await cleanup();
+  }
+});
+
+/** The goal button's label depends on whether a checker model is available. */
+const goalButton = (container: HTMLElement) => [...container.querySelectorAll('button')].find((button) => {
+  const label = button.getAttribute('aria-label') ?? '';
+  return label === 'Start a goal with the next message' || label.startsWith('Goals need a Small Model');
+});
+
+test('a Claude session offers no goal control; an OpenCode session keeps it', async () => {
+  const claude = await renderFooter(claudeRecord);
+  try {
+    expect(goalButton(claude.container)).toBeUndefined();
+  } finally {
+    await claude.cleanup();
+  }
+
+  const opencode = await renderFooter(openCodeRecord);
+  try {
+    expect(goalButton(opencode.container)).toBeDefined();
+  } finally {
+    await opencode.cleanup();
   }
 });

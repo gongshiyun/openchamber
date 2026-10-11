@@ -20,6 +20,8 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { listModelVariantIds, type ModelVariantSource } from '@/lib/modelVariants';
 
 export type ForkSessionExecution = {
@@ -61,6 +63,13 @@ export function ForkSessionDialog(props: ForkSessionDialogProps) {
   const currentModelID = useConfigStore((state) => state.currentModelId);
   const currentVariant = useConfigStore((state) => state.currentVariant || '');
   const currentAgentName = useConfigStore((state) => state.currentAgentName || '');
+  // A Claude session cannot fork (the fork is an OpenCode session route); the
+  // dialog's entry points are hidden for it, and this keeps a stale open state
+  // from forking one anyway.
+  const sourceIsClaude = useGlobalSessionsStore((state) => {
+    const session = sourceSessionId ? state.entityById.get(sourceSessionId) : undefined;
+    return session !== undefined && isClaudeBackendSession(session);
+  });
 
   const [providerID, setProviderID] = React.useState(currentProviderID);
   const [modelID, setModelID] = React.useState(currentModelID);
@@ -169,6 +178,8 @@ export function ForkSessionDialog(props: ForkSessionDialogProps) {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [open, handleSubmit]);
+
+  if (sourceIsClaude) return null;
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => { if (!submitting) onOpenChange(nextOpen); }}>

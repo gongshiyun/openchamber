@@ -56,6 +56,7 @@ mock.module('@/stores/useGlobalSessionsStore', () => ({
 mock.module('@/sync/sync-refs', () => ({
   registerSessionDirectory: (sessionId: string, directory: string) => { registeredDirectories.push(`${sessionId}:${directory}`); },
   getSyncMessages: () => parentSyncMessages,
+  getAllSyncSessionMap: () => new Map(childStoreSessions.map((session) => [session.id, session])),
   getSyncChildStores: () => ({
     // Mirrors ChildStoreManager.getChild: keys are normalized paths.
     getChild: (directory: string) => (normalizePath(directory) === '/project' || normalizePath(directory) === 'C:/project' ? {
@@ -330,6 +331,19 @@ describe('startBtwSession', () => {
     await expect(startBtwSession(startInput)).rejects.toThrow('btw session creation already in progress');
     releaseFork?.(makeSession('fork-1', '/project'));
     await first;
+  });
+
+  test('rejects a Claude parent before it forks', async () => {
+    childStoreSessions.push({
+      ...makeSession('parent-1', '/project'),
+      metadata: { openchamber: { backend: 'claude' } },
+    });
+    let forked = false;
+    forkSessionImpl = () => { forked = true; return Promise.resolve(makeSession('fork-1', '/project')); };
+
+    await expect(startBtwSession(startInput)).rejects.toThrow('btw is not available for Claude sessions');
+    expect(forked).toBe(false);
+    expect(useBtwStore.getState().byParent).toEqual({});
   });
 });
 

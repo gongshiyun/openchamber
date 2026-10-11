@@ -10,9 +10,11 @@ import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight';
-import { mergeCommandAutocompleteItems, rankCommandAutocompleteItems } from './commandAutocompleteItems';
+import { mergeCommandAutocompleteItems, rankCommandAutocompleteItems, isOpenCodeOnlyCommand } from './commandAutocompleteItems';
 import { useGuestCommands } from '@/hooks/useGuestSurfaces';
 import { AutocompleteRowTooltip } from './composer/ui/AutocompleteRowTooltip';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 
 // Skills are not here: they have their own `$` picker.
 type CommandSource = 'openchamber' | 'opencode' | 'extension';
@@ -81,6 +83,16 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const canStartSessionCommand = hasSession || hasNewSessionDraft;
   const isMobile = useUIStore((state) => state.isMobile);
   const canUseReviewHandoffFlow = hasSession && !isMobile && !isVSCodeRuntime();
+  // A Claude session (or a draft about to become one) has no `session.command`
+  // route and no OpenCode fork/compact APIs: the OpenCode-only entries leave
+  // the menu instead of failing on selection. Prompt-pair built-ins stay —
+  // they are plain text sends.
+  const currentSessionIsClaude = useGlobalSessionsStore((state) => {
+    const session = currentSessionId ? state.entityById.get(currentSessionId) : undefined;
+    return session !== undefined && isClaudeBackendSession(session);
+  });
+  const draftClaudeBackend = useSessionUIStore((state) => Boolean(state.newSessionDraft?.claudeBackend));
+  const claudeBackend = hasSession ? currentSessionIsClaude : hasNewSessionDraft && draftClaudeBackend;
 
   // Commands belong to the directory the composer sends to — the session's
   // own directory, or the Chats root for a chat draft — not to the project
@@ -213,11 +225,12 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       description: entry.command.description,
       extensionName: entry.guestName,
     }));
-    return [
+    const merged: CommandInfo[] = [
       ...mergeCommandAutocompleteItems(builtInCommands, customCommands),
       ...extensionCommands,
     ];
-  }, [hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, guestCommands, t]);
+    return claudeBackend ? merged.filter((command) => !isOpenCodeOnlyCommand(command)) : merged;
+  }, [hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, guestCommands, claudeBackend, t]);
   const commands = React.useMemo(
     () => rankCommandAutocompleteItems(allCommands, searchQuery),
     [allCommands, searchQuery],

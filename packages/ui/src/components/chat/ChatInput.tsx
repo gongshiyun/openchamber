@@ -117,6 +117,8 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { cyclePermissionMode } from './permissionAutoAccept';
 import { displayedPermissionMode, nextPermissionMode } from '@/stores/utils/permissionAutoAccept';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { selectAutoReady, selectSafetyNetAvailable, useRoutingStore } from '@/stores/useRoutingStore';
 import { useKeybind } from '@/hooks/useKeybind';
 import { hasOpenDropdown } from '@/hooks/keyboard-shortcut-dom';
@@ -511,7 +513,20 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const isBtwPanelVisible = Boolean((btwPanel.btwSessionId && btwPanel.btwDirectory) || btwPanel.creating || btwPanel.pending);
     const immediateBtwSubmitRef = React.useRef<{ identity: ChatDraftIdentity; text: string } | null>(null);
     const draftCaretModeRef = React.useRef({ btw: isBtwActive, atEnd: isBtwActive });
-    const inputMode = isBtwActive ? 'normal' : storedInputMode;
+    const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
+    // The new-session draft is the main chat's; a pinned composer is never on it.
+    const newSessionDraftOpen = !columnPinned && Boolean(newSessionDraft?.open);
+    // Claude sessions serve none of the OpenCode-only composer affordances:
+    // shell mode, the OpenCode slash commands, compact/fork/btw, goals and
+    // multi-run. A draft counts once its backend is Claude.
+    const currentSessionIsClaude = useGlobalSessionsStore((state) => {
+        const session = currentSessionId ? state.entityById.get(currentSessionId) : undefined;
+        return session !== undefined && isClaudeBackendSession(session);
+    });
+    const claudeBackendActive = currentSessionId
+        ? currentSessionIsClaude
+        : newSessionDraftOpen && Boolean(newSessionDraft?.claudeBackend);
+    const inputMode = isBtwActive || claudeBackendActive ? 'normal' : storedInputMode;
     // A session promoted out of `/btw` keeps the boundary instructions in its
     // transcript — there is no way to delete a message part — so it has to say
     // they no longer apply.
@@ -531,9 +546,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const claimAttachmentSlot = React.useCallback(() => {
         useInputStore.getState().selectAttachmentDraft(chatDraftIdentity);
     }, [chatDraftIdentity]);
-    const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
-    // The new-session draft is the main chat's; a pinned composer is never on it.
-    const newSessionDraftOpen = !columnPinned && Boolean(newSessionDraft?.open);
     const draftPermissionMode = useSessionUIStore((s) => (
         s.newSessionDraft?.open ? s.newSessionDraft.permissionMode : undefined
     ));
@@ -1280,7 +1292,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     usePendingComposerText({ enabled: !isBtwActive, target: mailboxTarget, setMessage, focus: focusComposer });
 
     const parallel = useParallelComposer({
-        enabled: !isMobile && !isBtwActive,
+        enabled: !isMobile && !isBtwActive && !claudeBackendActive,
         draftOpen: newSessionDraftOpen && newSessionDraft?.target !== 'chat',
         draftProjectId: newSessionDraft?.selectedProjectId ?? null,
         message,
@@ -1298,11 +1310,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     }, [parallelProject]);
     const enterParallel = parallel.enter;
     const { isActive: parallelActive, runCount: parallelRunCount, isLaunching: parallelLaunching, launch: launchParallel } = parallel;
-    const parallelRun = React.useMemo(() => (parallelActive ? {
+    const parallelRun = React.useMemo(() => (parallelActive && !claudeBackendActive ? {
         runCount: parallelRunCount,
         launching: parallelLaunching,
         onLaunch: () => { void launchParallel(); },
-    } : null), [launchParallel, parallelActive, parallelLaunching, parallelRunCount]);
+    } : null), [claudeBackendActive, launchParallel, parallelActive, parallelLaunching, parallelRunCount]);
     React.useLayoutEffect(() => {
         largeTextPasteGesture.invalidate();
     }, [largeTextPasteGesture, parallel.state?.active, parallel.isActive, newSessionDraftOpen, newSessionDraft?.target, mobileComposerExpanded, isExpandedInput]);
@@ -1638,6 +1650,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             if (!commandIsAvailable) commandPlan = null;
         }
         if (commandPlan?.command.name === 'handoff-review' && (isMobile || isVSCodeRuntime())) commandPlan = null;
+        // The OpenCode-only actions leave a Claude send as plain text: no
+        // session.command route, no compact, no fork, no btw. The menu hides
+        // them too; this covers a typed invocation.
+        if (commandPlan && claudeBackendActive
+            && (commandPlan.command.name === 'compact' || commandPlan.command.name === 'fork' || commandPlan.command.name === 'btw')) {
+            commandPlan = null;
+        }
 
         // Enter BTW before sending so the question uses its isolated selections.
         // A bare command waits for input; an argument requests one immediate send.
@@ -2386,8 +2405,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
         // Enter shell mode before CodeMirror inserts the trigger. Keeping the
         // document unchanged also keeps the caret at the start for the first
-        // command character.
-        if (!isBtwActive && inputMode === 'normal' && e.key === '!') {
+        // command character. Claude has no shell route, so its `!` stays text.
+        if (!isBtwActive && !claudeBackendActive && inputMode === 'normal' && e.key === '!') {
             const selection = composerRef.current?.getSelection();
             if (selection?.start === 0 && selection.end === 0) {
                 e.preventDefault();
@@ -2714,8 +2733,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         // A leading `!` switches the composer into shell mode and is consumed.
         // Mobile keyboards and paste may update the document without a usable
         // keydown, so consume the trigger in the same editor transaction rather
-        // than moving the caret in a later frame against stale text.
-        if (!isBtwActive && inputMode === 'normal' && value.startsWith('!')) {
+        // than moving the caret in a later frame against stale text. Claude has
+        // no shell route: there the `!` is plain text.
+        if (!isBtwActive && !claudeBackendActive && inputMode === 'normal' && value.startsWith('!')) {
             const shellCommand = value.slice(1);
             const nextCursor = Math.max(0, selection.start - 1);
             setInputMode('shell');
@@ -3220,7 +3240,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     });
 
     const handleCommandSelect = useStableHandler((command: CommandInfo) => {
-        if (command.name === 'btw' && currentSessionId) {
+        if (command.name === 'btw' && currentSessionId && !claudeBackendActive) {
             closeAutocomplete();
             void handleSubmitRef.current({ presetText: '/btw' });
             return;
@@ -3863,7 +3883,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     // the server writes either it or the done hint, never both. Neither the
     // AI review nor the walkthrough is offered on a mobile layout.
     const openReviewDialog = React.useCallback(() => setReviewDialogOpen(true), []);
-    const reviewHintRow = !isBtwActive && !newSessionDraftOpen && !isMobile ? (
+    const reviewHintRow = !isBtwActive && !newSessionDraftOpen && !isMobile && !claudeBackendActive ? (
         <SessionReviewHintRow
             sessionId={currentSessionId}
             directory={currentSessionDirectoryForSync ?? currentDirectory}
@@ -3894,7 +3914,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         : null;
     const autoReviewRow = !isBtwActive && !newSessionDraftOpen ? <AutoReviewStrip /> : null;
     // The session's goal, then what is still running, then what waits for it.
-    const goalRow = !isBtwActive ? (
+    // A Claude session runs no goal loop, so the row never renders for one.
+    const goalRow = !isBtwActive && !claudeBackendActive ? (
         <SessionGoalRow
             sessionId={currentSessionId}
             directory={currentSessionDirectoryForSync ?? currentDirectory}
@@ -4272,7 +4293,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         text area + footer exactly. */}
                     <div className={cn('relative flex flex-col', isComposerExpanded && 'flex-1 min-h-0')} data-dictation-chain="true">
                     <div className={cn("overflow-hidden", isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}>
-                        {parallel.isActive ? <ParallelComposerStrip parallel={parallel} project={parallelProjectRef} /> : null}
+                        {parallel.isActive && !claudeBackendActive ? <ParallelComposerStrip parallel={parallel} project={parallelProjectRef} /> : null}
                         {composerTopRows}
                         {isMobile && isBtwActive ? (
                             <div className="scrollbar-none relative z-10 flex items-center gap-x-2 overflow-x-auto px-3 pb-0.5 pt-1.5">
@@ -4410,7 +4431,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         modelSessionId={btwComposerSessionId}
                         btwSelection={effectiveBtwSelection}
                         pinnedSelection={pinnedComposerSelection}
-                        onRunInParallel={!isMobile && !isBtwActive && !columnPinned ? handleRunInParallel : undefined}
+                        onRunInParallel={!isMobile && !isBtwActive && !columnPinned && !claudeBackendActive ? handleRunInParallel : undefined}
                         parallelRun={parallelRun}
                         waitingForOpenCode={waitingForOpenCode}
                     />

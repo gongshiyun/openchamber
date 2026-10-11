@@ -19,7 +19,7 @@ import { ComposerDictation } from '@/components/dictation/ComposerDictation';
 import { Icon } from '@/components/icon/Icon';
 import type { GuestAttachItem } from '@/hooks/useGuestSurfaces';
 import { useI18n } from '@/lib/i18n';
-import { selectClaudeSessionModel } from '@/lib/sessionBackend';
+import { selectClaudeSessionEffort, selectClaudeSessionModel, selectClaudeSessionPermissionMode } from '@/lib/sessionBackend';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionSelector } from '@/sync/sync-context';
@@ -32,7 +32,9 @@ import { ComposerAttachmentControls } from './ComposerAttachmentControls';
 import { DraftBackendControls } from './DraftBackendControls';
 import { FocusModeButton } from './FocusModeButton';
 import { PermissionAutoAcceptButton } from './PermissionAutoAcceptButton';
+import { SessionClaudeEffortControl } from './SessionClaudeEffortControl';
 import { SessionClaudeModelControl } from './SessionClaudeModelControl';
+import { SessionClaudePermissionModeControl } from './SessionClaudePermissionModeControl';
 import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
 import type { BtwSelection } from '@/stores/useBtwStore';
 
@@ -179,6 +181,16 @@ function ComposerFooterView(props: ComposerFooterProps) {
         directory,
         selectClaudeSessionModel,
     );
+    const sessionClaudePermissionMode = useSessionSelector(
+        newSessionDraftOpen ? null : currentSessionId,
+        directory,
+        selectClaudeSessionPermissionMode,
+    );
+    const sessionClaudeEffort = useSessionSelector(
+        newSessionDraftOpen ? null : currentSessionId,
+        directory,
+        selectClaudeSessionEffort,
+    );
     const claudeControlsShown = newSessionDraftOpen
         ? draftClaudeBackend !== undefined
         : sessionClaudeModel !== null;
@@ -227,14 +239,14 @@ function ComposerFooterView(props: ComposerFooterProps) {
                                 permissionMode={permissionMode}
                                 handlePermissionModeCycle={onCyclePermissionMode}
                             />
-                            {!isBtw ? <SessionGoalButton
+                            {!isBtw && !claudeControlsShown ? <SessionGoalButton
                                 sessionId={currentSessionId}
                                 directory={directory}
                                 draftOpen={newSessionDraftOpen}
                                 footerIconButtonClass={footerIconButtonClass}
                                 iconSizeClass={iconSizeClass}
                             /> : null}
-                            {!isBtw ? <SessionGoalObjectiveCounter length={messageLength} /> : null}
+                            {!isBtw && !claudeControlsShown ? <SessionGoalObjectiveCounter length={messageLength} /> : null}
                         </div>
                         <div className="flex items-center min-w-0 gap-x-1 justify-end">
                             {waitingForOpenCode ? <OpenCodeStartupNote /> : null}
@@ -308,7 +320,7 @@ function ComposerFooterView(props: ComposerFooterProps) {
                             handlePermissionModeCycle={onCyclePermissionMode}
                             withTooltip
                         />
-                        {!isBtw ? <SessionGoalButton
+                        {!isBtw && !claudeControlsShown ? <SessionGoalButton
                             sessionId={currentSessionId}
                             directory={directory}
                             draftOpen={newSessionDraftOpen}
@@ -316,20 +328,40 @@ function ComposerFooterView(props: ComposerFooterProps) {
                             iconSizeClass={iconSizeClass}
                             withTooltip
                         /> : null}
-                        {!isBtw ? <SessionGoalObjectiveCounter length={messageLength} /> : null}
+                        {!isBtw && !claudeControlsShown ? <SessionGoalObjectiveCounter length={messageLength} /> : null}
                     </div>
                     <div className={cn('flex items-center flex-1 justify-end', footerGapClass, 'md:gap-x-3')} data-dictation-chain="true">
                         {waitingForOpenCode ? <OpenCodeStartupNote className="flex-shrink-0" /> : null}
                         {parallelRun ? <div className="flex-1" /> : isBtw ? <ModelControls className="flex-1 min-w-0 justify-end" sessionId={modelSessionId ?? null} selection={btwSelection} /> : pinnedSelection ? (
                             sessionClaudeModel !== null && currentSessionId ? (
-                                <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                                <>
+                                    <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                                    {sessionClaudePermissionMode !== null ? (
+                                        <SessionClaudePermissionModeControl
+                                            sessionId={currentSessionId}
+                                            directory={directory}
+                                            mode={sessionClaudePermissionMode}
+                                        />
+                                    ) : null}
+                                    <SessionClaudeEffortControl sessionId={currentSessionId} directory={directory} effort={sessionClaudeEffort} />
+                                </>
                             ) : (
                                 <ModelControls className="flex-1 min-w-0 justify-end" sessionId={currentSessionId} selection={pinnedSelection} agentSelectable />
                             )
                         ) : <>
                             {newSessionDraftOpen ? <DraftBackendControls /> : null}
                             {!newSessionDraftOpen && sessionClaudeModel !== null && currentSessionId ? (
-                                <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                                <>
+                                    <SessionClaudeModelControl sessionId={currentSessionId} directory={directory} model={sessionClaudeModel} />
+                                    {sessionClaudePermissionMode !== null ? (
+                                        <SessionClaudePermissionModeControl
+                                            sessionId={currentSessionId}
+                                            directory={directory}
+                                            mode={sessionClaudePermissionMode}
+                                        />
+                                    ) : null}
+                                    <SessionClaudeEffortControl sessionId={currentSessionId} directory={directory} effort={sessionClaudeEffort} />
+                                </>
                             ) : null}
                             {claudeControlsShown ? null : <MemoModelControls className={cn('flex-1 min-w-0 justify-end')} onRunInParallel={onRunInParallel} />}
                         </>}

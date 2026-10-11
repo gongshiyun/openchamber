@@ -2,6 +2,7 @@ import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/i18n';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { isReviewSuggested } from '@/lib/sessionWorkMetadata';
 import { useSession, useSessionStatus } from '@/sync/sync-context';
 import { useUIStore } from '@/stores/useUIStore';
@@ -27,8 +28,11 @@ export const SessionReviewHintRow: React.FC<SessionReviewHintRowProps> = React.m
   const openContextSurface = useUIStore((state) => state.openContextSurface);
   const requestWalkthroughTarget = useWalkthroughStore((state) => state.requestTarget);
   const isIdle = !status || status.type === 'idle';
+  // Both offers (an AI review by another agent and the walkthrough) run
+  // OpenChamber's OpenCode-backed flows; a Claude session gets neither.
+  const sessionIsClaude = session !== undefined && isClaudeBackendSession(session);
 
-  if (!sessionId || !directory || !reviewOfferEnabled || !isIdle || !isReviewSuggested(session)) return null;
+  if (!sessionId || !directory || !reviewOfferEnabled || !isIdle || sessionIsClaude || !isReviewSuggested(session)) return null;
 
   const handleWalkthrough = () => {
     // The whole working tree: what this session changed is not separable

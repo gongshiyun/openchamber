@@ -216,6 +216,9 @@ type VisibleRailSurfacesOptions = {
       connected (OAuth, a token, or a detected `gh`/`glab` login). Accounts are
       connected from Settings, so hiding the surface removes no entry point. */
   sourceControlConnected: boolean;
+  /** The open session cannot use the walkthrough (a Claude session: the
+      walkthrough is an OpenCode-backed flow), so its rail entry is hidden. */
+  hideWalkthrough?: boolean;
   /** Installed guest panels. Empty on VS Code and when the catalog has not
       loaded or failed. */
   extras?: readonly ContextSurfaceDescriptor[];
@@ -242,7 +245,9 @@ export const getVisibleContextRailSurfaces = (options: VisibleRailSurfacesOption
     }
     // The walkthrough needs room for a stop list beside real code, and its
     // diffs come from OpenChamber's Git routes, which VS Code does not serve.
-    if (surface.id === 'walkthrough' && (options.isVSCode || options.screenWidth < WALKTHROUGH_MIN_WIDTH)) {
+    // A Claude session cannot run it at all (the generation is an
+    // OpenCode-backed flow), so the entry leaves the rail while one is open.
+    if (surface.id === 'walkthrough' && (options.isVSCode || options.screenWidth < WALKTHROUGH_MIN_WIDTH || options.hideWalkthrough)) {
       return false;
     }
     // VS Code already is an editor with a browser next to it. What OpenChamber

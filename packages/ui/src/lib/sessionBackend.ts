@@ -30,6 +30,15 @@ export type ClaudeModelAlias = (typeof CLAUDE_MODEL_ALIASES)[number]
 /** Alias a Claude session starts on when the draft has not picked one. */
 export const DEFAULT_CLAUDE_MODEL: ClaudeModelAlias = "opus"
 
+/** Permission modes the Claude backend accepts; absent metadata reads as the default. */
+export const CLAUDE_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions"] as const
+export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number]
+export const DEFAULT_CLAUDE_PERMISSION_MODE: ClaudePermissionMode = "default"
+
+/** Reasoning effort levels the Claude backend accepts; absent metadata reads as unset. */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const
+export type ClaudeEffort = (typeof CLAUDE_EFFORT_LEVELS)[number]
+
 const isJsonObject = (value: JsonValue | undefined): value is { [key: string]: JsonValue } =>
   value !== undefined && value !== null && !Array.isArray(value) && Object(value) === value
 
@@ -38,6 +47,14 @@ export const isClaudeBackendSession = (session: Pick<Session, "metadata">): bool
   const openchamber = session.metadata?.openchamber
   return isJsonObject(openchamber) && openchamber.backend === CLAUDE_BACKEND
 }
+
+/** True when the value names a permission mode the backend accepts. */
+export const isClaudePermissionMode = (value: string): value is ClaudePermissionMode =>
+  CLAUDE_PERMISSION_MODES.some((mode) => mode === value)
+
+/** True when the value names an effort level the backend accepts. */
+export const isClaudeEffort = (value: string): value is ClaudeEffort =>
+  CLAUDE_EFFORT_LEVELS.some((level) => level === value)
 
 /** True when the value names a Claude model alias the backend accepts. */
 export const isClaudeModelAlias = (value: string): value is ClaudeModelAlias =>
@@ -57,4 +74,35 @@ export const selectClaudeSessionModel = (
   return model && model.providerID === CLAUDE_PROVIDER_ID && isClaudeModelAlias(model.id)
     ? model.id
     : DEFAULT_CLAUDE_MODEL
+}
+
+/** True for a record that runs on Claude Code; false while the record is unknown. */
+export const selectIsClaudeBackendSession = (session: Pick<Session, "metadata"> | undefined): boolean =>
+  session !== undefined && isClaudeBackendSession(session)
+
+const claudeOpenchamberNamespace = (session: Pick<Session, "metadata">): { [key: string]: JsonValue } | null => {
+  const openchamber = session.metadata?.openchamber
+  return isJsonObject(openchamber) ? openchamber : null
+}
+
+/**
+ * The permission mode a Claude session runs with. Null for a non-Claude record;
+ * an absent or unknown stored value reads as the default, the same healing the
+ * server applies to the record.
+ */
+export const selectClaudeSessionPermissionMode = (session: Pick<Session, "metadata"> | undefined): ClaudePermissionMode | null => {
+  if (!session || !isClaudeBackendSession(session)) return null
+  const stored = claudeOpenchamberNamespace(session)?.permissionMode
+  return CLAUDE_PERMISSION_MODES.find((mode) => mode === stored) ?? DEFAULT_CLAUDE_PERMISSION_MODE
+}
+
+/**
+ * The reasoning effort a Claude session runs with, or null when unset (also
+ * null for a non-Claude record: the composer only reads it inside a Claude
+ * branch).
+ */
+export const selectClaudeSessionEffort = (session: Pick<Session, "metadata"> | undefined): ClaudeEffort | null => {
+  if (!session || !isClaudeBackendSession(session)) return null
+  const stored = claudeOpenchamberNamespace(session)?.effort
+  return CLAUDE_EFFORT_LEVELS.find((level) => level === stored) ?? null
 }

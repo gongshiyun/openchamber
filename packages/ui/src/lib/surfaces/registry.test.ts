@@ -37,6 +37,13 @@ describe('getVisibleContextRailSurfaces', () => {
     ).toBe(true);
   });
 
+  test('hides the walkthrough while a session that cannot run it is open', () => {
+    expect(getVisibleContextRailSurfaces({ ...baseOptions, hideWalkthrough: true }).some((s) => s.id === 'walkthrough')).toBe(false);
+    expect(getVisibleContextRailSurfaces({ ...baseOptions, hideWalkthrough: false }).some((s) => s.id === 'walkthrough')).toBe(true);
+    // The flag is about the walkthrough alone; the other surfaces stay.
+    expect(getVisibleContextRailSurfaces({ ...baseOptions, hideWalkthrough: true }).some((s) => s.id === 'diff')).toBe(true);
+  });
+
   test('offers no browser surface inside VS Code', () => {
     expect(getVisibleContextRailSurfaces(baseOptions).some((s) => s.id === 'browser')).toBe(true);
     // Nothing that makes the panel worth having works there, so offering it

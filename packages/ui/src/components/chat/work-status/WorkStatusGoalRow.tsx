@@ -6,6 +6,8 @@ import { useSessionGoal } from '@/hooks/useSessionGoal';
 import { setSessionGoalStatus } from '@/lib/sessionGoalActions';
 import { sessionGoalStatusColor } from '@/lib/sessionGoalPresentation';
 import { SessionGoalDialog } from '@/components/chat/SessionGoalDialog';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { WorkStatusRow, WorkStatusRowAction } from './WorkStatusPrimitives';
 
 type Props = {
@@ -19,6 +21,11 @@ export const WorkStatusGoalRow: React.FC<Props> = ({ sessionId, directory }) => 
   const { goal, enabled } = useSessionGoal(sessionId ?? '', directory ?? undefined);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // A Claude session runs no goal loop; the row never renders for one.
+  const sessionIsClaude = useGlobalSessionsStore((state) => {
+    const session = sessionId ? state.entityById.get(sessionId) : undefined;
+    return session !== undefined && isClaudeBackendSession(session);
+  });
 
   const handleToggleStatus = React.useCallback(async (nextStatus: 'active' | 'paused') => {
     if (!sessionId || busy) return;
@@ -33,7 +40,7 @@ export const WorkStatusGoalRow: React.FC<Props> = ({ sessionId, directory }) => 
   }, [busy, directory, sessionId, t]);
 
   const objective = enabled && goal ? goal.objective?.trim() || null : null;
-  if (!objective || !sessionId) return null;
+  if (!objective || !sessionId || sessionIsClaude) return null;
 
   // No control while complete: there is nothing left to pause or resume.
   const canPause = goal?.status === 'active';

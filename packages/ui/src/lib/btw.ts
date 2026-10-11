@@ -6,7 +6,8 @@ import { withBtwSessionLink, withBtwSessionMarker, withoutBtwSessionLink, withou
 import { useBtwStore } from '@/stores/useBtwStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
-import { getSyncChildStores, getSyncMessages, registerSessionDirectory } from '@/sync/sync-refs';
+import { getSyncChildStores, getSyncMessages, registerSessionDirectory, getAllSyncSessionMap } from '@/sync/sync-refs';
+import { isClaudeBackendSession } from '@/lib/sessionBackend';
 import { Binary } from '@/sync/binary';
 import type { ContextPartMetadata } from '@/lib/messages/contextParts';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
@@ -190,6 +191,13 @@ export async function startBtwSession(input: StartBtwInput): Promise<Session> {
   const { setPanelState } = useBtwStore.getState();
   if (useBtwStore.getState().byParent[input.parentSessionId]?.creating) {
     throw new Error('btw session creation already in progress');
+  }
+  // /btw forks through OpenCode's session API; a Claude parent has no fork
+  // route. The composer hides the command for Claude sessions, and this keeps
+  // a stale entry from forking one anyway.
+  const parentSession = getAllSyncSessionMap().get(input.parentSessionId);
+  if (parentSession && isClaudeBackendSession(parentSession)) {
+    throw new Error('btw is not available for Claude sessions');
   }
   const expectedRuntimeKey = input.expectedRuntimeKey ?? getRuntimeKey();
   if (getRuntimeKey() !== expectedRuntimeKey) throw new Error('runtime changed');
