@@ -106,7 +106,7 @@ Every decision emits `permission.replied` with the reply. A parked request nobod
 
 ### Effort
 
-A session's reasoning effort is stored as `openchamber.effort` (`low`, `medium`, `high`, `xhigh`, `max`; a stored value outside the set is dropped on load). `POST /api/session/:id/effort` writes or clears it (`{ effort: null }`) through the same metadata merge and emits `session.metadata.updated` like the permission mode, but the runner reads effort only when it is created — `buildOptions().effort` — so a change applies from the session's next runner (an idle reap or a restart), never to a live one.
+A session's reasoning effort is stored as `openchamber.effort` (`low`, `medium`, `high`, `xhigh`, `max`; a stored value outside the set is dropped on load). `POST /api/session/:id/effort` writes or clears it (`{ effort: null }`) through the same metadata merge and emits `session.metadata.updated` like the permission mode, but the runner reads effort only when its SDK query is created — `buildOptions().effort`. A prompt that follows an effort change replaces an idle runner with a fresh one (which resumes the Claude session), so the setting lands on the next turn; a busy runner keeps its turn untouched and is replaced by the first prompt after it settles.
 
 ## Persistence
 

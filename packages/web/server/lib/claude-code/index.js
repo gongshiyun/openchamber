@@ -818,7 +818,7 @@ export function createClaudeCodeRuntime({
   const runnerEntryFor = (record) => {
     let entry = runners.get(record.id);
     if (entry) return entry;
-    entry = { runner: null, promise: null };
+    entry = { runner: null, promise: null, effort: null };
     entry.promise = (async () => {
       const transcript = await transcriptFor(record);
       const cliPath = await resolveCli();
@@ -828,6 +828,10 @@ export function createClaudeCodeRuntime({
       if (model.providerID !== record.model?.providerID || model.id !== record.model?.id) {
         record.model = model;
       }
+      // The effort this runner is being created with, kept on the entry so a
+      // later prompt can tell the setting changed (see the refresh helper).
+      const effort = effortLevelOrNull(record.metadata?.openchamber?.effort);
+      entry.effort = effort;
       const runner = runnerFactory.createRunner({
         sessionID: record.id,
         directory: record.directory,
@@ -835,11 +839,12 @@ export function createClaudeCodeRuntime({
         model: record.model.id,
         // The mode is re-read on every runner creation and a live query can be
         // switched (`setPermissionMode`); effort is read here only, so a change
-        // applies from the next runner. The metadata was healed on write and
-        // on load; healing once more keeps the runner on a valid value even if
-        // a record ever drifted.
+        // takes a fresh runner — the first prompt after the change (an idle
+        // runner is replaced; a busy one keeps its turn, see the refresh
+        // helper). The metadata was healed on write and on load; healing once
+        // more keeps the runner on a valid value even if a record ever drifted.
         permissionMode: permissionModeOrDefault(record.metadata?.openchamber?.permissionMode),
-        effort: effortLevelOrNull(record.metadata?.openchamber?.effort),
+        effort,
         claudeSessionUuid: record.claudeSessionUuid,
         cliPath,
         transcript,
@@ -958,8 +963,26 @@ export function createClaudeCodeRuntime({
     return transcript.getRecord(messageID)?.info ?? null;
   };
 
+  /**
+   * Effort is read when the SDK query is created and a live query keeps the
+   * value it started with. A prompt that follows an effort change therefore
+   * starts a fresh runner (which resumes the Claude session), so the setting
+   * takes effect on the next turn instead of waiting for an idle reap. A busy
+   * runner is left alone: its turn is still running, and the first prompt after
+   * that turn settles takes the fresh path.
+   */
+  const refreshRunnerForEffort = async (record) => {
+    const entry = runners.get(record.id);
+    const runner = entry?.runner;
+    if (!runner || runner.isBusy()) return;
+    if (entry.effort === effortLevelOrNull(record.metadata?.openchamber?.effort)) return;
+    runners.delete(record.id);
+    await runner.dispose();
+  };
+
   const sendPrompt = async (sessionID, input = {}) => {
     const record = requireRecord(sessionID);
+    await refreshRunnerForEffort(record);
     const runner = await runnerEntryFor(record).promise;
     // The first prompt with text names the session, like OpenCode's own
     // auto-titling; a title already set (by that prompt, a rename, or the

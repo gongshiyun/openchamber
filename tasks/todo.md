@@ -52,6 +52,8 @@
   - 标题生成在打包应用静默失效：SDK 自带 CLI 解析到 app.asar 内无法启动 → 标题一次性调用补 CLI 路径；CLI 解析新增打包感知的自带二进制回退（asar → app.asar.unpacked 改写，musl Linux 让 SDK 自选）— 2264c60
 - [x] 实机验证补充：附件送达模型（marker 出现在记录中）✓；标题模型化生成落地（`"No Secret Marker Can Be Revealed"`）✓
 - [x] 本地 tag `claude-code-backend-v1` → 2264c60（最终验证状态，45 提交）；推送等用户确认（用户规则：推送前检查确认）
+- [x] 试用版 UI 陈旧问题（用户报告：无 effort 下拉、入口未隐藏）：根因是重打包只跑了 `bundle:main`+`package.mjs`，**未重建 web 资源**（10:46 的旧产物）；修正流程 = `build:web-assets` → `bundle:main` → `package.mjs` → rcedit → 启动。新 UI 已在浏览器面板实测：三个 Claude 控件齐全（用户点击写入 `permissionMode: bypassPermissions` + `effort: max` ✓）、无"从这条消息分叉"/右栏无"导读" ✓、会话实时流式 ✓
+- [x] 思考强度体验补强：改动后**下次提问即生效**（空闲 runner 换新并 resume；忙碌中不打断）— index.js + 2 个测试；待下次重打包进入试用版
 - 排除项（用户确认）：终端面板（需 VS Spectre 库）、移动端 composer
 
 ## 记录

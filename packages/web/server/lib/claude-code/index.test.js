@@ -1508,6 +1508,47 @@ describe('claude code runtime', () => {
       expect(emitted[2].data.metadata.openchamber.effort).toBeUndefined();
     });
 
+    test('a prompt after an effort change starts a fresh runner', async () => {
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_effort_2', location: { directory: 'C:\\work\\effort' } }).expect(200);
+
+      await request(app).post('/api/session/ses_effort_2/prompt').send({ id: 'msg_eff_2a', text: 'one' }).expect(200);
+      expect(runners.runners).toHaveLength(1);
+      expect(runners.sessions[0].effort).toBeNull();
+
+      // Unchanged effort: the same runner takes the next prompt.
+      await request(app).post('/api/session/ses_effort_2/prompt').send({ id: 'msg_eff_2b', text: 'two' }).expect(200);
+      expect(runners.runners).toHaveLength(1);
+
+      // The change takes effect on the next prompt: the idle runner is disposed
+      // (its replacement resumes the Claude session) and carries the new effort.
+      await request(app).post('/api/session/ses_effort_2/effort').send({ effort: 'max' }).expect(200);
+      await request(app).post('/api/session/ses_effort_2/prompt').send({ id: 'msg_eff_2c', text: 'three' }).expect(200);
+      expect(runners.runners).toHaveLength(2);
+      expect(runners.runners[0].disposed).toBe(1);
+      expect(runners.sessions[1].effort).toBe('max');
+    });
+
+    test('a busy runner keeps its turn when the effort changes', async () => {
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_effort_3', location: { directory: 'C:\\work\\effort' } }).expect(200);
+
+      await request(app).post('/api/session/ses_effort_3/prompt').send({ id: 'msg_eff_3a', text: 'one' }).expect(200);
+      runners.runners[0].busy = true;
+
+      await request(app).post('/api/session/ses_effort_3/effort').send({ effort: 'low' }).expect(200);
+      await request(app).post('/api/session/ses_effort_3/prompt').send({ id: 'msg_eff_3b', text: 'two' }).expect(200);
+
+      // The running turn is not interrupted: the same runner takes the prompt.
+      expect(runners.runners).toHaveLength(1);
+      expect(runners.runners[0].disposed).toBe(0);
+      expect(runners.runners[0].sends).toHaveLength(2);
+    });
+
     test('rejects an effort level outside the SDK set', async () => {
       const { runtime, hub } = createRuntime();
       await runtime.start();
