@@ -10,7 +10,7 @@ The trust boundary is the user's own `claude` CLI. A Claude session runs that CL
 
 - `packages/web/server/lib/claude-code/index.js`: the composition root. `createClaudeCodeRuntime({ dataDir, eventHub, getSettings, ... })` builds the registry, transcripts, lazy runners, router, and the adapters the server wires into the proxy and the OpenChamber session routes. `start()` loads the index; `stop()` disposes every live runner and drains index writes.
 - `packages/web/server/lib/claude-code/routes.js`: the OpenCode v2 route subset, mounted by the proxy at `/api` ahead of the OpenCode readiness gate.
-- `packages/web/server/lib/claude-code/runner.js`: one live Agent SDK `query()` per session — streaming input, turn lifecycle, permissions, interrupt, idle reaping, dispose. The SDK spawns one `claude` process per query, so a live session is one child process of this server.
+- `packages/web/server/lib/claude-code/runner.js`: one live Agent SDK `query()` per session — streaming input, turn lifecycle, permissions, prompt attachments, interrupt, idle reaping, dispose. The SDK spawns one `claude` process per query, so a live session is one child process of this server.
 - `packages/web/server/lib/claude-code/translator.js`: a pure state machine mapping SDK messages to OpenCode v2 wire events. No IO, no SDK import; an unknown or malformed message maps to no events.
 - `packages/web/server/lib/claude-code/transcript.js`: the wire message records and their append-only JSONL persistence; the source of `message.list`.
 - `packages/web/server/lib/claude-code/cli-resolution.js`: resolves the user's `claude` CLI and builds a spawn spec for a caller that spawns it itself.
@@ -31,6 +31,8 @@ The shared UI talks to every backend through `@opencode/client` 2.x, whose gener
 | `/api/session/:sessionID/move` | POST | `204` |
 | `/api/session/:sessionID/model` | POST | `204` |
 | `/api/session/:sessionID/agent` | POST | `204` |
+| `/api/session/:sessionID/permission-mode` | POST | `200 { data: { mode } }` — an OpenChamber extension |
+| `/api/session/:sessionID/effort` | POST | `200 { data: { effort } }` — an OpenChamber extension |
 | `/api/session/:sessionID/prompt` | POST | `200 { data }` |
 | `/api/session/:sessionID/generate` | POST | `200 { data }` — one-shot text; never enters history |
 | `/api/session/:sessionID/synthetic` | POST | `200 { data }` |
@@ -38,13 +40,23 @@ The shared UI talks to every backend through `@opencode/client` 2.x, whose gener
 | `/api/session/:sessionID/message` | GET | `200 { data, cursor }` |
 | `/api/session/:sessionID/permission/:permID/reply` | POST | `204` |
 
-Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, synthetic text, or decision; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission; `session.generate` answers the tagged `503 ServiceUnavailableError` when its one-shot query fails or times out (its descriptor declares 400/401/404/503). The shared UI maps the tag back to a status. `session.synthetic` is the context channel the UI uses ahead of a prompt: it answers `200 { data }` with the recorded message and never starts a turn (see Synthetic context below).
+Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, synthetic text, decision, an unknown permission mode, or an unknown effort; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission; `session.generate` answers the tagged `503 ServiceUnavailableError` when its one-shot query fails or times out (its descriptor declares 400/401/404/503). The shared UI maps the tag back to a status. `session.synthetic` is the context channel the UI uses ahead of a prompt: it answers `200 { data }` with the recorded message and never starts a turn (see Synthetic context below).
 
 `message.list` keeps the OpenCode v2 page semantics: `order` defaults to newest first, `cursor` is a message id the page starts strictly after, and `next` is present only while more records remain in the walk direction. History answers from the transcript, so it works with no runner at all.
 
 ### Synthetic context
 
 `POST /api/session/:sessionID/synthetic` admits one context item (a quoted selection, terminal output, PR checks, skill instructions) as a `synthetic` message before the prompt that carries it. The registry records it in the transcript — so it shows in `message.list` history and, as the `session.synthetic` wire event, in every live stream — and answers `200 { data }` with the recorded wire record; the envelope id is the client's message id in the event id space (`msg_` → `evt_`), so the optimistic context block the UI already rendered reconciles in place. Nothing starts a turn: the admitted texts wait on the session record, and the next `sendPrompt` hands them to the runner, which leads the SDK turn's content with them separated by blank lines (the transcript's user record keeps the user's own text). The list is cleared once the prompt is sent — a failed send does not roll it back — and the payload's `delivery` and `resume` are ignored in v1.
+
+### Prompt attachments
+
+The prompt route forwards a validated `files` array: objects with a string `uri`, plus a `name` when present; malformed entries are dropped, and no valid entry means no `files` at all. The shared UI's `toPromptFile` (`packages/ui/src/lib/opencode/client.ts`) sends `data:<mime>;base64,<payload>`. Without files the SDK user message keeps the plain-string content v1 always sent; with files it becomes Messages API blocks — the text block (synthetic context folded in) first, then one block per file:
+
+- `image/*` → a base64 image block (`{ type: 'image', source: { type: 'base64', media_type, data } }`).
+- A text-like file (`text/*`, `application/json`, `application/xml`, `application/yaml`, `application/x-yaml`, a `+json`/`+xml` suffix) → decoded to UTF-8 behind a `[File: <name>]` header, cut at 256 KB decoded with a truncation marker.
+- Anything else — an unparsable data URI, another mime type, and every file once the turn's base64 payloads pass 5 MB — is skipped with a `console.warn` and named in an `[Attachment skipped: <name> (<mime>)]` text block, so the model knows something was dropped.
+
+The transcript's user record still keeps only the user's own text; attachments travel in the SDK turn alone. Agent mentions, skills, metadata, and delivery still have no runner path.
 
 ### One-shot text
 
@@ -82,13 +94,19 @@ Every SDK `result` that settles a turn carries the session's cumulative `total_c
 
 ### Permissions
 
-The SDK calls the runner's `canUseTool` before a tool execution; which tools reach it is the CLI's own `permissionMode: 'default'` policy, the mode the runner sets explicitly. The runner mints a `per_` + 22 base62 id, emits `permission.asked` (`{ id, action, resources, message, metadata: { toolName, input }, source? }`; `resources` is the first of `command`, `file_path`, `notebook_path`, `url`, `pattern`, `query` present in the tool input, and `source` names the assistant message and tool call when one is open), and parks the call until a reply:
+A session's permission mode is stored in its metadata as `openchamber.permissionMode` — `default`, `acceptEdits`, or `bypassPermissions` (the SDK's `plan`, `dontAsk`, and `auto` modes are out of v1; a stored value outside the three heals to `default` on load, and an absent value reads as `default` everywhere). `POST /api/session/:id/permission-mode` writes the mode through the same metadata merge as any metadata update, tells a live runner through the query's own `setPermissionMode` (streaming input mode supports it), and emits `session.metadata.updated`, so the change reaches every client immediately and the next runner starts with it. The runner passes the mode in `buildOptions().permissionMode`; `bypassPermissions` also sets `allowDangerouslySkipPermissions`, which the SDK requires.
+
+Which tools reach `canUseTool` is the CLI's own policy for that mode. The runner mints a `per_` + 22 base62 id, emits `permission.asked` (`{ id, action, resources, message, metadata: { toolName, input }, source? }`; `resources` is the first of `command`, `file_path`, `notebook_path`, `url`, `pattern`, `query` present in the tool input, and `source` names the assistant message and tool call when one is open), and parks the call until a reply:
 
 - `once` — allow.
 - `always` — allow, remember the tool name for the rest of the runner (later calls are allowed without asking), and hand the SDK's own permission suggestions back as `updatedPermissions` so the CLI remembers too.
 - `reject` — deny with "Rejected by the user".
 
-Every decision emits `permission.replied` with the reply. An aborted tool signal (an interrupted turn) and a disposed runner answer with a deny so no call stays parked. An unknown request id answers `false`, which the route turns into `404` — permission-auto-accept reads that as "already replied".
+Every decision emits `permission.replied` with the reply. A parked request nobody answers is denied after 30 minutes (`permissionParkMaxMs`) with "Permission request timed out", emits `permission.replied` with `reply: 'reject'`, and logs a warning naming the request and session; the timer is cleared when the request is answered, its signal aborts, or the runner is disposed, so the timeout can never answer twice. An aborted tool signal (an interrupted turn) and a disposed runner answer with a deny so no call stays parked. An unknown request id answers `false`, which the route turns into `404` — permission-auto-accept reads that as "already replied".
+
+### Effort
+
+A session's reasoning effort is stored as `openchamber.effort` (`low`, `medium`, `high`, `xhigh`, `max`; a stored value outside the set is dropped on load). `POST /api/session/:id/effort` writes or clears it (`{ effort: null }`) through the same metadata merge and emits `session.metadata.updated` like the permission mode, but the runner reads effort only when it is created — `buildOptions().effort` — so a change applies from the session's next runner (an idle reap or a restart), never to a live one.
 
 ## Persistence
 
@@ -112,7 +130,7 @@ Boot: `start()` rejects on an unreadable or malformed index, because starting em
 - One runner per session, created on first prompt and memoized as a promise so two concurrent prompts cannot spawn two processes. The CLI path is resolved when the runner is created, not at boot, so a changed `claudeBinary` applies to the next session without a restart. A failed runner creation is not memoized; the next prompt retries.
 - Streaming input. The runner keeps one `query()` open across turns and feeds prompts through an async-iterable input queue the SDK pulls from. One turn at a time: a prompt sent while a turn runs waits in a FIFO and starts the next turn, so the translator always owns exactly one open turn.
 - A turn settles on the SDK `result` (`session.step.ended` + `session.execution.succeeded`, or the failure pair), on an interrupt, on a transport failure, or on an idle reap.
-- Interrupt. `interrupt()` asks the SDK to stop and settles the turn from the next result or stream end. The SDK gets 10 seconds (`INTERRUPT_SETTLE_MS`) to settle; when it does not, the runner settles the turn itself as interrupted, so a control request that never completes cannot leave the session busy forever. A force-settled turn may leave its SDK result outstanding; the runner counts outstanding results so a late result cannot settle a later turn.
+- Interrupt. `interrupt()` asks the SDK to stop and settles the turn from the next result or stream end. The SDK gets 10 seconds (`INTERRUPT_SETTLE_MS`) to settle; when it does not, the runner settles the turn itself as interrupted and logs a warning naming the session, so a control request that never completes cannot leave the session busy forever and the event is diagnosable. A force-settled turn may leave its SDK result outstanding; the runner counts outstanding results so a late result cannot settle a later turn.
 - Idle reaping. The idle timer resets on send, on every SDK message, and on permission activity (a parked request and its answer); after 15 minutes (`DEFAULT_IDLE_MS`) the runner settles an open turn as interrupted, disposes itself, and reports to `onIdle`, so the registry drops it. A turn with a parked permission request is never reaped: waiting for the user's answer is not idleness. The next prompt creates a fresh runner that resumes the Claude session through `resume`.
 - Dispose. Answers parked permission calls with a deny, closes the input queue, closes the query, drops queued prompts (their user records stay in the transcript, but they never reached the SDK, so a resumed Claude session does not know them), and drains the transcript. `stop()` disposes every live runner and waits for index writes still in flight; `server/index.js` calls it from graceful shutdown.
 - Move. `moveSession` updates the record and emits `session.moved`, but a live runner keeps the `cwd` it was created with; the new directory applies to the next runner, after the live one is reaped or disposed. v1 does not dispose the runner on move.
@@ -131,8 +149,8 @@ All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so
 
 ## Known v1 limitations
 
-- Permission mode is fixed at the SDK's `'default'`; there is no plan / acceptEdits / bypass switch, and no UI for one.
-- The prompt route accepts files, agent mentions, skills, metadata, and a delivery mode, but v1 carries only the text, the client-minted message id, and the context admitted through `session.synthetic` to the runner; files, agent mentions, skills, metadata, and delivery are dropped.
+- Permission modes are limited to `default`, `acceptEdits`, and `bypassPermissions`; the SDK's `plan`, `dontAsk`, and `auto` modes are future work, and v1 ships no UI control for the mode — the route is the surface.
+- The prompt route accepts files, agent mentions, skills, metadata, and a delivery mode, but v1 carries only the text, the client-minted message id, the context admitted through `session.synthetic`, and validated file attachments to the runner; agent mentions, skills, metadata, and delivery are dropped.
 - `POST /api/session/:id/agent` records the selection and emits `session.agent.selected`, but the runner's step events always report the translator's fixed agent (`claude`).
 - SSE: Claude frames ride every `/api/event` stream, not only global ones — the proxy filters by session id, not by directory, so a directory-scoped stream also carries Claude frames of other directories. This is deliberate: a Claude session has no OpenCode upstream of its own (see `../opencode/DOCUMENTATION.md`).
 - A move does not dispose a live runner (see Lifecycle).

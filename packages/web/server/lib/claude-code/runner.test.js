@@ -6,7 +6,7 @@
 // translator are the real committed modules, with the transcript's filesystem
 // injected, so the tests observe the same records production writes.
 
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, vi } from 'bun:test';
 
 import { createRunnerFactory } from './runner.js';
 import { createTranscript } from './transcript.js';
@@ -45,7 +45,7 @@ const createMemoryFs = () => {
 /** A controllable stand-in for the SDK's `Query` async generator. */
 const createFakeQuery = () => {
   const messages = [];
-  const calls = { interrupts: 0, models: [], closes: 0 };
+  const calls = { interrupts: 0, models: [], permissionModes: [], closes: 0 };
   let waiting = null;
   let finished = false;
   let failure = null;
@@ -85,6 +85,9 @@ const createFakeQuery = () => {
     },
     setModel: async (model) => {
       calls.models.push(model);
+    },
+    setPermissionMode: async (mode) => {
+      calls.permissionModes.push(mode);
     },
     close: () => {
       calls.closes += 1;
@@ -357,6 +360,70 @@ describe('turns', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Permission modes and effort
+// ---------------------------------------------------------------------------
+
+describe('permission modes and effort', () => {
+  test('buildOptions carries the session permission mode and the danger flag', async () => {
+    const bypass = createHarness({ session: { permissionMode: 'bypassPermissions' } });
+    await bypass.runner.send({ text: 'hi', messageID: 'msg_1' });
+    expect(bypass.spawns[0].options).toMatchObject({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    });
+
+    const edits = createHarness({ session: { permissionMode: 'acceptEdits' } });
+    await edits.runner.send({ text: 'hi', messageID: 'msg_2' });
+    expect(edits.spawns[0].options.permissionMode).toBe('acceptEdits');
+    expect(edits.spawns[0].options.allowDangerouslySkipPermissions).toBeUndefined();
+  });
+
+  test('a session without a mode spawns on the default without the danger flag', async () => {
+    const { runner, spawns } = createHarness();
+
+    await runner.send({ text: 'hi', messageID: 'msg_1' });
+
+    expect(spawns[0].options.permissionMode).toBe('default');
+    expect(spawns[0].options.allowDangerouslySkipPermissions).toBeUndefined();
+  });
+
+  test('setPermissionMode tells the live query and the next spawn', async () => {
+    const { runner, fake, spawns, emitted } = createHarness();
+
+    await runner.send({ text: 'first', messageID: 'msg_1' });
+    await runner.setPermissionMode('acceptEdits');
+    expect(fake.calls.permissionModes).toEqual(['acceptEdits']);
+
+    // The respawn after a transport failure starts from the stored mode.
+    fake.fail(new Error('process exited'));
+    await waitFor(() => eventsOfType(emitted, 'session.execution.failed').length === 1);
+    await runner.send({ text: 'second', messageID: 'msg_2' });
+    expect(spawns).toHaveLength(2);
+    expect(spawns[1].options.permissionMode).toBe('acceptEdits');
+  });
+
+  test('setPermissionMode stores the mode when no query is live yet', async () => {
+    const { runner, spawns } = createHarness();
+
+    await runner.setPermissionMode('bypassPermissions');
+    await runner.send({ text: 'first', messageID: 'msg_1' });
+
+    expect(spawns[0].options.permissionMode).toBe('bypassPermissions');
+    expect(spawns[0].options.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  test('options carry the session effort level when one is set', async () => {
+    const withEffort = createHarness({ session: { effort: 'high' } });
+    await withEffort.runner.send({ text: 'hi', messageID: 'msg_1' });
+    expect(withEffort.spawns[0].options.effort).toBe('high');
+
+    const without = createHarness();
+    await without.runner.send({ text: 'hi', messageID: 'msg_2' });
+    expect(without.spawns[0].options.effort).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
 
@@ -460,6 +527,273 @@ describe('permissions', () => {
     expect(await answer).toEqual({ behavior: 'deny', message: 'Session closed' });
     expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(0);
   });
+
+  test('a parked permission is denied and reported when it times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, fake, spawns, emitted, idleCalls } = createHarness({
+        factory: { permissionParkMaxMs: 30 },
+      });
+
+      await runner.send({ text: 'run tests', messageID: 'msg_1' });
+      const canUseTool = spawns[0].options.canUseTool;
+      const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+      await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+      const request = eventsOfType(emitted, 'permission.asked')[0];
+
+      expect(await answer).toEqual({ behavior: 'deny', message: 'Permission request timed out' });
+      const replied = eventsOfType(emitted, 'permission.replied');
+      expect(replied).toHaveLength(1);
+      expect(replied[0].data).toEqual({ sessionID: SESSION_ID, requestID: request.data.id, reply: 'reject' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(SESSION_ID);
+
+      // The runner keeps running: the denied tool lets the turn settle from
+      // the stream, and the timed-out request can no longer be answered.
+      expect(runner.isBusy()).toBe(true);
+      expect(fake.calls.closes).toBe(0);
+      expect(idleCalls).toEqual([]);
+      expect(runner.resolvePermission(request.data.id, 'once')).toBe(false);
+
+      fake.push(successResult());
+      await waitFor(() => eventsOfType(emitted, 'session.execution.succeeded').length === 1);
+      expect(runner.isBusy()).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('an answer before the park deadline cancels the timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, spawns, emitted } = createHarness({ factory: { permissionParkMaxMs: 40 } });
+
+      await runner.send({ text: 'run tests', messageID: 'msg_1' });
+      const canUseTool = spawns[0].options.canUseTool;
+      const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+      await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+      const request = eventsOfType(emitted, 'permission.asked')[0];
+
+      expect(runner.resolvePermission(request.data.id, 'once')).toBe(true);
+      expect(await answer).toEqual({ behavior: 'allow' });
+
+      // Past the park window: the answer stands and no timeout fired.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(1);
+      expect(eventsOfType(emitted, 'permission.replied')[0].data.reply).toBe('once');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('an abort before the park deadline cancels the timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, spawns, emitted } = createHarness({ factory: { permissionParkMaxMs: 40 } });
+
+      await runner.send({ text: 'run tests', messageID: 'msg_1' });
+      const controller = new AbortController();
+      const canUseTool = spawns[0].options.canUseTool;
+      const answer = canUseTool(
+        'Bash',
+        { command: 'bun test' },
+        { signal: controller.signal, toolUseID: 'toolu_1' },
+      );
+      await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+
+      controller.abort();
+      expect(await answer).toEqual({ behavior: 'deny', message: 'Interrupted' });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(1);
+      expect(eventsOfType(emitted, 'permission.replied')[0].data.reply).toBe('reject');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('dispose before the park deadline cancels the timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, spawns, emitted } = createHarness({ factory: { permissionParkMaxMs: 40 } });
+
+      await runner.send({ text: 'run tests', messageID: 'msg_1' });
+      const canUseTool = spawns[0].options.canUseTool;
+      const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+      await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+
+      await runner.dispose();
+      expect(await answer).toEqual({ behavior: 'deny', message: 'Session closed' });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prompt attachments
+// ---------------------------------------------------------------------------
+
+describe('prompt attachments', () => {
+  const base64Of = (value) => Buffer.from(value, 'utf8').toString('base64');
+  const attachmentBlocks = (message) => message.message.content;
+
+  test('an image file follows the text block as a base64 image block', async () => {
+    const { runner, promptMessages } = createHarness();
+    const payload = base64Of('PNGDATA');
+
+    await runner.send({
+      text: 'What is this?',
+      messageID: 'msg_1',
+      context: ['A screenshot:'],
+      files: [{ uri: `data:image/png;base64,${payload}`, name: 'shot.png' }],
+    });
+
+    await waitFor(() => promptMessages.length === 1);
+    expect(attachmentBlocks(promptMessages[0])).toEqual([
+      { type: 'text', text: 'A screenshot:\n\nWhat is this?' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: payload } },
+    ]);
+  });
+
+  test('a file-only prompt carries the attachment blocks without an empty text block', async () => {
+    const { runner, promptMessages } = createHarness();
+    const payload = base64Of('PNGDATA');
+
+    await runner.send({
+      text: '',
+      messageID: 'msg_1',
+      files: [{ uri: `data:image/png;base64,${payload}`, name: 'shot.png' }],
+    });
+
+    await waitFor(() => promptMessages.length === 1);
+    expect(attachmentBlocks(promptMessages[0])).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: payload } },
+    ]);
+  });
+
+  test('a text-like file is decoded behind a name header', async () => {
+    const { runner, promptMessages } = createHarness();
+
+    await runner.send({
+      text: 'See the log',
+      messageID: 'msg_1',
+      files: [{ uri: `data:text/plain;base64,${base64Of('line one\nline two')}`, name: 'log.txt' }],
+    });
+
+    await waitFor(() => promptMessages.length === 1);
+    expect(attachmentBlocks(promptMessages[0])).toEqual([
+      { type: 'text', text: 'See the log' },
+      { type: 'text', text: '[File: log.txt]\nline one\nline two' },
+    ]);
+  });
+
+  test('a binary file is skipped with a note and a warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, promptMessages } = createHarness();
+
+      await runner.send({
+        text: 'Hi',
+        messageID: 'msg_1',
+        files: [{ uri: `data:application/octet-stream;base64,${base64Of('BIN')}`, name: 'blob.bin' }],
+      });
+
+      await waitFor(() => promptMessages.length === 1);
+      expect(attachmentBlocks(promptMessages[0])).toEqual([
+        { type: 'text', text: 'Hi' },
+        { type: 'text', text: '[Attachment skipped: blob.bin (application/octet-stream)]' },
+      ]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('an unparsable entry is skipped with an unknown-mime note', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, promptMessages } = createHarness();
+
+      await runner.send({
+        text: 'Hi',
+        messageID: 'msg_1',
+        files: [
+          { uri: 'not-a-data-uri', name: 'weird.txt' },
+          null,
+        ],
+      });
+
+      await waitFor(() => promptMessages.length === 1);
+      expect(attachmentBlocks(promptMessages[0])).toEqual([
+        { type: 'text', text: 'Hi' },
+        { type: 'text', text: '[Attachment skipped: weird.txt (unknown)]' },
+        { type: 'text', text: '[Attachment skipped: attachment 2 (unknown)]' },
+      ]);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('a text file past the decoded cap is truncated with a marker', async () => {
+    const { runner, promptMessages } = createHarness();
+    const oversized = 'a'.repeat(256 * 1024 + 100);
+
+    await runner.send({
+      text: 'Read it',
+      messageID: 'msg_1',
+      files: [{ uri: `data:text/plain;base64,${base64Of(oversized)}`, name: 'big.txt' }],
+    });
+
+    await waitFor(() => promptMessages.length === 1);
+    const block = attachmentBlocks(promptMessages[0])[1];
+    expect(block.type).toBe('text');
+    expect(block.text.startsWith('[File: big.txt]\na')).toBe(true);
+    expect(block.text.endsWith('[Attachment truncated at 256 KB]')).toBe(true);
+    expect(block.text.length).toBe(
+      '[File: big.txt]\n'.length + 256 * 1024 + '\n[Attachment truncated at 256 KB]'.length,
+    );
+  });
+
+  test('files past the total payload cap are skipped with the note', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { runner, promptMessages } = createHarness();
+      const atCap = 'A'.repeat(5 * 1024 * 1024);
+
+      await runner.send({
+        text: 'Look',
+        messageID: 'msg_1',
+        files: [
+          // Exactly at the cap: still carried.
+          { uri: `data:image/png;base64,${atCap}`, name: 'huge.png' },
+          // The next file pushes the total over it, and the one after stays skipped.
+          { uri: `data:text/plain;base64,${base64Of('hello')}`, name: 'after.txt' },
+          { uri: `data:text/plain;base64,${base64Of('later')}`, name: 'later.txt' },
+        ],
+      });
+
+      await waitFor(() => promptMessages.length === 1);
+      const blocks = attachmentBlocks(promptMessages[0]);
+      expect(blocks).toHaveLength(4);
+      expect(blocks[1]).toEqual({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: atCap },
+      });
+      expect(blocks[2]).toEqual({ type: 'text', text: '[Attachment skipped: after.txt (text/plain)]' });
+      expect(blocks[3]).toEqual({ type: 'text', text: '[Attachment skipped: later.txt (text/plain)]' });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -517,6 +851,33 @@ describe('interrupt and failure', () => {
     await runner.interrupt();
     expect(fake.calls.interrupts).toBe(0);
     expect(emitted).toEqual([]);
+  });
+
+  test('a force-settled interrupt warns with the session it settled', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const { runner, fake, emitted } = createHarness();
+
+      await runner.send({ text: 'long task', messageID: 'msg_1' });
+      fake.push(blockStart(0, { type: 'text' }));
+      // The interrupt control request never settles and the stream stays open,
+      // so only the force-settle path can end the turn.
+      await runner.interrupt();
+      expect(fake.calls.interrupts).toBe(1);
+      expect(runner.isBusy()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(eventsOfType(emitted, 'session.execution.interrupted')).toHaveLength(1);
+      expect(eventsOfType(emitted, 'session.execution.interrupted')[0].data.reason).toBe('user');
+      expect(runner.isBusy()).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(SESSION_ID);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   test('a generator throw fails the turn without crashing the runner', async () => {

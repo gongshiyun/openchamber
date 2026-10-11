@@ -77,6 +77,7 @@ const createFakeRunners = () => {
       const runner = {
         sends: [],
         models: [],
+        permissionModes: [],
         permissions: [],
         interrupts: 0,
         disposed: 0,
@@ -95,6 +96,9 @@ const createFakeRunners = () => {
         },
         async setModel(modelId) {
           runner.models.push(modelId);
+        },
+        async setPermissionMode(mode) {
+          runner.permissionModes.push(mode);
         },
         resolvePermission(requestID, decision) {
           runner.permissions.push([requestID, decision]);
@@ -1314,6 +1318,180 @@ describe('claude code runtime', () => {
 
       await expect(runtime.mergeSessionMetadata('ses_missing', { note: 'x' })).rejects.toThrow();
       await expect(runtime.mergeSessionMetadata('ses_meta_1', 'not an object')).rejects.toThrow();
+    });
+  });
+
+  describe('permission mode and effort', () => {
+    test('stores the permission mode, emits the metadata event and tells the live runner', async () => {
+      const { runtime, hub, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createAndPrompt(app, { id: 'ses_mode_1', location: { directory: 'C:\\work\\mode' } });
+      const runner = runners.runners[0];
+
+      const response = await request(app)
+        .post('/api/session/ses_mode_1/permission-mode')
+        .send({ mode: 'acceptEdits' })
+        .expect(200);
+
+      expect(response.body).toEqual({ data: { mode: 'acceptEdits' } });
+      expect(runner.permissionModes).toEqual(['acceptEdits']);
+      expect(hub.ofType('session.metadata.updated')).toEqual([
+        expect.objectContaining({
+          data: {
+            sessionID: 'ses_mode_1',
+            metadata: { openchamber: { backend: 'claude', permissionMode: 'acceptEdits' } },
+          },
+          location: { directory: 'C:/work/mode' },
+        }),
+      ]);
+      expect((await readIndex()).ses_mode_1.metadata.openchamber.permissionMode).toBe('acceptEdits');
+      const info = (await request(app).get('/api/session/ses_mode_1').expect(200)).body.data;
+      expect(info.metadata.openchamber.permissionMode).toBe('acceptEdits');
+
+      // A session with no live runner stores the mode without one.
+      await createSession(app, { id: 'ses_mode_2', location: { directory: 'C:\\work\\mode' } }).expect(200);
+      await request(app)
+        .post('/api/session/ses_mode_2/permission-mode')
+        .send({ mode: 'bypassPermissions' })
+        .expect(200);
+      expect(runners.runners).toHaveLength(1);
+      expect((await readIndex()).ses_mode_2.metadata.openchamber.permissionMode).toBe('bypassPermissions');
+    });
+
+    test('rejects a permission mode outside the v1 set', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_mode_3', location: { directory: 'C:\\work\\mode' } }).expect(200);
+
+      for (const mode of ['plan', 'dontAsk', 'auto', 'yolo', '', 42, null]) {
+        const response = await request(app)
+          .post('/api/session/ses_mode_3/permission-mode')
+          .send({ mode })
+          .expect(400);
+        expect(response.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      }
+      expect(hub.ofType('session.metadata.updated')).toEqual([]);
+      // Nothing was stored: an absent mode reads as the default everywhere.
+      expect(runtime.getSessionMetadata('ses_mode_3')).toEqual({ openchamber: { backend: 'claude' } });
+    });
+
+    test('heals an unknown stored permission mode and effort on load', async () => {
+      await fs.mkdir(path.dirname(indexPath()), { recursive: true });
+      await fs.writeFile(indexPath(), JSON.stringify({
+        ses_mode_heal: {
+          directory: 'C:\\work\\mode',
+          title: 'Heal',
+          createdAt: 1,
+          updatedAt: 1,
+          model: { providerID: 'claude-code', id: 'opus' },
+          claudeSessionUuid: null,
+          metadata: { openchamber: { permissionMode: 'yolo', effort: 'gigantic', pinned: true } },
+        },
+      }), 'utf8');
+
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+
+      // The healed metadata is on disk, so the next boot starts canonical: the
+      // unknown mode became the default, the unknown effort was dropped.
+      const healed = { openchamber: { backend: 'claude', permissionMode: 'default', pinned: true } };
+      expect((await readIndex()).ses_mode_heal.metadata).toEqual(healed);
+      expect(runtime.getSessionMetadata('ses_mode_heal')).toEqual(healed);
+
+      // The healed values reach the runner when the session is prompted.
+      const app = createApp(runtime);
+      await request(app)
+        .post('/api/session/ses_mode_heal/prompt')
+        .send({ id: 'msg_heal_1', text: 'Hello' })
+        .expect(200);
+      expect(runners.sessions[0].permissionMode).toBe('default');
+      expect(runners.sessions[0].effort).toBeNull();
+    });
+
+    test('stores an effort level, clears it with null, and emits the metadata event', async () => {
+      const { runtime, hub, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_effort_1', location: { directory: 'C:\\work\\effort' } }).expect(200);
+
+      const set = await request(app).post('/api/session/ses_effort_1/effort').send({ effort: 'xhigh' }).expect(200);
+      expect(set.body).toEqual({ data: { effort: 'xhigh' } });
+      expect((await readIndex()).ses_effort_1.metadata.openchamber.effort).toBe('xhigh');
+
+      // Effort is read at runner creation, so the next runner carries it; a
+      // change while a runner is live is not handed to it (the fake runner has
+      // no setEffort, so a call would fail the request).
+      await request(app).post('/api/session/ses_effort_1/prompt').send({ id: 'msg_eff_1', text: 'Hi' }).expect(200);
+      expect(runners.sessions[0].effort).toBe('xhigh');
+      await request(app).post('/api/session/ses_effort_1/effort').send({ effort: 'low' }).expect(200);
+      expect(runners.runners[0].sends).toHaveLength(1);
+
+      const cleared = await request(app).post('/api/session/ses_effort_1/effort').send({ effort: null }).expect(200);
+      expect(cleared.body).toEqual({ data: { effort: null } });
+      expect((await readIndex()).ses_effort_1.metadata.openchamber.effort).toBeUndefined();
+      expect(runtime.getSessionMetadata('ses_effort_1').openchamber.effort).toBeUndefined();
+
+      const emitted = hub.ofType('session.metadata.updated');
+      expect(emitted).toHaveLength(3);
+      expect(emitted[0].data.metadata.openchamber.effort).toBe('xhigh');
+      expect(emitted[1].data.metadata.openchamber.effort).toBe('low');
+      expect(emitted[2].data.metadata.openchamber.effort).toBeUndefined();
+    });
+
+    test('rejects an effort level outside the SDK set', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_effort_2', location: { directory: 'C:\\work\\effort' } }).expect(200);
+
+      for (const effort of ['gigantic', 'HIGH', 42]) {
+        const response = await request(app)
+          .post('/api/session/ses_effort_2/effort')
+          .send({ effort })
+          .expect(400);
+        expect(response.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      }
+      expect(hub.ofType('session.metadata.updated')).toEqual([]);
+    });
+  });
+
+  describe('prompt attachments', () => {
+    test('forwards validated attachments to the runner and drops malformed entries', async () => {
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_files_1', location: { directory: 'C:\\work\\files' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_files_1/prompt')
+        .send({
+          id: 'msg_files_1',
+          text: 'See the attachment',
+          files: [
+            { uri: 'data:text/plain;base64,aGVsbG8=', name: 'note.txt' },
+            { name: 'missing-uri.txt' },
+            { uri: 42 },
+            null,
+          ],
+        })
+        .expect(200);
+
+      expect(runners.runners[0].sends).toEqual([
+        {
+          text: 'See the attachment',
+          messageID: 'msg_files_1',
+          files: [{ uri: 'data:text/plain;base64,aGVsbG8=', name: 'note.txt' }],
+        },
+      ]);
+
+      // A prompt with no usable attachment keeps the plain send shape.
+      await request(app)
+        .post('/api/session/ses_files_1/prompt')
+        .send({ id: 'msg_files_2', text: 'No files', files: 'nonsense' })
+        .expect(200);
+      expect(runners.runners[0].sends[1]).toEqual({ text: 'No files', messageID: 'msg_files_2' });
     });
   });
 

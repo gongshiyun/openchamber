@@ -45,7 +45,14 @@ import { isPlainObject, isString } from '../shared/guards.js';
 import { resolveClaudeCliPath } from './cli-resolution.js';
 import { createMessageId, createSessionId } from './ids.js';
 import { createClaudeRoutes } from './routes.js';
-import { createRunnerFactory, defaultSpawnQuery } from './runner.js';
+import {
+  CLAUDE_EFFORT_LEVELS,
+  CLAUDE_PERMISSION_MODES,
+  createRunnerFactory,
+  defaultSpawnQuery,
+  effortLevelOrNull,
+  permissionModeOrDefault,
+} from './runner.js';
 import { createTranscript } from './transcript.js';
 import { createTranslator } from './translator.js';
 
@@ -105,11 +112,27 @@ const modelRefOf = (model) => {
   return ref;
 };
 
-/** The metadata every Claude session carries, whatever the caller sent. */
+/**
+ * The metadata every Claude session carries, whatever the caller sent: the
+ * backend marker is re-asserted, and the session's own selections under
+ * `openchamber` are healed to their valid forms — a permission mode that was
+ * stored heals to `'default'` when it is unknown, and an unknown effort level
+ * is dropped. An absent mode is left absent: it reads as `'default'`
+ * everywhere (`permissionModeOrDefault`), so a fresh record carries only the
+ * selections its caller made. Applied on create, on every metadata merge, and
+ * on load, so a stored record and a fresh one read the same.
+ */
 const withBackendMetadata = (metadata) => {
   const base = isPlainObject(metadata) ? metadata : {};
   const openchamber = isPlainObject(base.openchamber) ? base.openchamber : {};
-  return { ...base, openchamber: { ...openchamber, backend: BACKEND } };
+  const next = { ...openchamber, backend: BACKEND };
+  if (openchamber.permissionMode !== undefined) {
+    next.permissionMode = permissionModeOrDefault(openchamber.permissionMode);
+  }
+  const effort = effortLevelOrNull(openchamber.effort);
+  if (effort === null) delete next.effort;
+  else next.effort = effort;
+  return { ...base, openchamber: next };
 };
 
 const numberOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
@@ -330,7 +353,8 @@ export function createClaudeCodeRuntime({
    * `projectID` is derived from it rather than trusted from the file; a field
    * that no longer has the right type falls back to its default instead of
    * poisoning every later read. The directory and the model are healed to
-   * their canonical forms here, so a legacy record reads like a fresh one.
+   * their canonical forms here, and the metadata's permission mode and effort
+   * to theirs, so a legacy record reads like a fresh one.
    */
   const recordFromStored = (sessionID, value) => {
     const directory = normalizeClaudeDirectory(value.directory) ?? '';
@@ -345,7 +369,7 @@ export function createClaudeCodeRuntime({
       tokens: tokensFromStored(value.tokens),
       model: modelRefOf(value.model),
       claudeSessionUuid: isString(value.claudeSessionUuid) ? value.claudeSessionUuid : null,
-      metadata: isPlainObject(value.metadata) ? value.metadata : {},
+      metadata: withBackendMetadata(value.metadata),
     };
     if (isString(value.agent) && value.agent !== '') record.agent = value.agent;
     return record;
@@ -355,8 +379,9 @@ export function createClaudeCodeRuntime({
    * Loads the persisted index. A missing file is an empty registry; an
    * unreadable one throws, because starting empty would silently forget every
    * session and the next write would then overwrite the file. A record the
-   * load healed (a legacy directory spelling, a foreign model) makes the
-   * canonical index be written back, so the file and the memory agree.
+   * load healed (a legacy directory spelling, a foreign model, an unknown
+   * permission mode or effort) makes the canonical index be written back, so
+   * the file and the memory agree.
    */
   const start = async () => {
     let raw;
@@ -714,6 +739,37 @@ export function createClaudeCodeRuntime({
     return metadata;
   };
 
+  /**
+   * The session's permission mode: stored in the record's metadata through the
+   * same merge semantics as any metadata write, and handed to a live runner
+   * through the query's own `setPermissionMode` (streaming input mode supports
+   * it). The live process is an optimization: the record is written first, so
+   * a control-call failure still leaves the next runner on the new mode.
+   */
+  const setPermissionMode = async (sessionID, mode) => {
+    if (!CLAUDE_PERMISSION_MODES.includes(mode)) {
+      throw new TypeError(`unknown Claude permission mode: ${String(mode)}`);
+    }
+    await mergeSessionMetadata(sessionID, { openchamber: { permissionMode: mode } });
+    const runner = runners.get(sessionID)?.runner;
+    if (runner) await runner.setPermissionMode(mode).catch(() => {});
+    return mode;
+  };
+
+  /**
+   * The session's reasoning effort, stored like the permission mode. The
+   * runner reads it when it is created (`buildOptions`), so a change applies
+   * from the session's next runner — an idle reap or a restart — not to a live
+   * one; `null` clears the selection.
+   */
+  const setEffort = async (sessionID, effort) => {
+    if (effort !== null && !CLAUDE_EFFORT_LEVELS.includes(effort)) {
+      throw new TypeError(`unknown Claude effort level: ${String(effort)}`);
+    }
+    await mergeSessionMetadata(sessionID, { openchamber: { effort } });
+    return effort;
+  };
+
   // -------------------------------------------------------------------------
   // Transcripts and runners
   // -------------------------------------------------------------------------
@@ -765,6 +821,13 @@ export function createClaudeCodeRuntime({
         directory: record.directory,
         cwd: record.directory,
         model: record.model.id,
+        // The mode is re-read on every runner creation and a live query can be
+        // switched (`setPermissionMode`); effort is read here only, so a change
+        // applies from the next runner. The metadata was healed on write and
+        // on load; healing once more keeps the runner on a valid value even if
+        // a record ever drifted.
+        permissionMode: permissionModeOrDefault(record.metadata?.openchamber?.permissionMode),
+        effort: effortLevelOrNull(record.metadata?.openchamber?.effort),
         claudeSessionUuid: record.claudeSessionUuid,
         cliPath,
         transcript,
@@ -880,14 +943,16 @@ export function createClaudeCodeRuntime({
       }
     }
     const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
-    // v1 carries the text, the client-minted message id, and the synthetic
-    // context admitted since the last prompt. Files, agent mentions, skills,
-    // metadata and delivery reach this route but have no runner path yet;
-    // they are dropped until a later task adds them.
+    // v1 carries the text, the client-minted message id, the synthetic context
+    // admitted since the last prompt, and the file attachments the route
+    // validated; agent mentions, skills, metadata and delivery reach this
+    // route but have no runner path yet and are dropped until a later task
+    // adds them.
     const context = record.pendingContext ?? [];
     record.pendingContext = [];
     const send = { text: input.text, messageID };
     if (context.length > 0) send.context = context;
+    if (Array.isArray(input.files) && input.files.length > 0) send.files = input.files;
     await runner.send(send);
     return { id: messageID };
   };
@@ -942,6 +1007,8 @@ export function createClaudeCodeRuntime({
     interrupt,
     switchModel,
     switchAgent,
+    setPermissionMode,
+    setEffort,
     getMessages,
     replyPermission,
   };

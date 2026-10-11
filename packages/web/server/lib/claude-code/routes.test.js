@@ -33,6 +33,8 @@ const createRegistry = (overrides = {}) => {
     interrupt: record('interrupt', { interrupted: true }),
     switchModel: record('switchModel', undefined),
     switchAgent: record('switchAgent', undefined),
+    setPermissionMode: record('setPermissionMode', (sessionID, mode) => mode),
+    setEffort: record('setEffort', (sessionID, effort) => effort),
     getMessages: record('getMessages', { data: [{ id: 'msg_1' }], cursor: { next: 'cur_2' } }),
     replyPermission: record('replyPermission', true),
     ...overrides,
@@ -79,13 +81,15 @@ describe('claude session routes', () => {
       await request(app).post(`/api/session/${session}/move`).send({ directory: '/repo/other' }).expect(418);
       await request(app).post(`/api/session/${session}/model`).send({ model: { id: 'opus', providerID: 'claude-code' } }).expect(418);
       await request(app).post(`/api/session/${session}/agent`).send({ agent: 'build' }).expect(418);
+      await request(app).post(`/api/session/${session}/permission-mode`).send({ mode: 'acceptEdits' }).expect(418);
+      await request(app).post(`/api/session/${session}/effort`).send({ effort: 'high' }).expect(418);
       await request(app).post(`/api/session/${session}/generate`).send({ prompt: 'Hi' }).expect(418);
       await request(app).post(`/api/session/${session}/synthetic`).send({ text: 'context' }).expect(418);
       await request(app).post(`/api/session/${session}/interrupt`).expect(418);
       await request(app).get(`/api/session/${session}/message`).expect(418);
       await request(app).post(`/api/session/${session}/permission/perm_1/reply`).send({ decision: 'once' }).expect(418);
 
-      expect(terminal).toHaveLength(11);
+      expect(terminal).toHaveLength(13);
       expect(calls).toEqual([]);
     });
 
@@ -196,6 +200,51 @@ describe('claude session routes', () => {
 
       expect(calls).toEqual([
         ['sendPrompt', 'ses_claude_1', { text: 'See the attachment', id: 'msg_client_1', files }],
+      ]);
+    });
+
+    test('drops malformed attachments and keeps the valid ones', async () => {
+      const { app, calls } = createApp();
+
+      await request(app)
+        .post('/api/session/ses_claude_1/prompt')
+        .send({
+          id: 'msg_files_1',
+          text: 'Look',
+          files: [
+            { uri: 'data:text/plain;base64,aGVsbG8=', name: 'note.txt' },
+            { name: 'missing-uri.txt' },
+            { uri: 42, name: 'bad.txt' },
+            null,
+            { uri: 'data:image/png;base64,iVBORw0KGgo=' },
+          ],
+        })
+        .expect(200);
+
+      expect(calls).toEqual([
+        ['sendPrompt', 'ses_claude_1', {
+          text: 'Look',
+          id: 'msg_files_1',
+          files: [
+            { uri: 'data:text/plain;base64,aGVsbG8=', name: 'note.txt' },
+            { uri: 'data:image/png;base64,iVBORw0KGgo=' },
+          ],
+        }],
+      ]);
+
+      // A non-array, or an array with nothing valid, forwards no files at all.
+      await request(app)
+        .post('/api/session/ses_claude_1/prompt')
+        .send({ id: 'msg_files_2', text: 'No files', files: 'nonsense' })
+        .expect(200);
+      await request(app)
+        .post('/api/session/ses_claude_1/prompt')
+        .send({ id: 'msg_files_3', text: 'Still none', files: [{ uri: '' }] })
+        .expect(200);
+
+      expect(calls.slice(1)).toEqual([
+        ['sendPrompt', 'ses_claude_1', { text: 'No files', id: 'msg_files_2' }],
+        ['sendPrompt', 'ses_claude_1', { text: 'Still none', id: 'msg_files_3' }],
       ]);
     });
 
@@ -341,6 +390,66 @@ describe('claude session routes', () => {
         ['switchModel', 'ses_claude_1', { id: 'opus', providerID: 'claude-code' }],
         ['switchAgent', 'ses_claude_1', 'build'],
       ]);
+    });
+  });
+
+  describe('permission mode and effort', () => {
+    test('sets a permission mode and answers the mode envelope', async () => {
+      const { app, calls } = createApp();
+
+      const response = await request(app)
+        .post('/api/session/ses_claude_1/permission-mode')
+        .send({ mode: 'acceptEdits' })
+        .expect(200);
+
+      expect(calls).toEqual([['setPermissionMode', 'ses_claude_1', 'acceptEdits']]);
+      expect(response.body).toEqual({ data: { mode: 'acceptEdits' } });
+    });
+
+    test('rejects a mode outside the v1 set', async () => {
+      const { app, calls } = createApp();
+
+      for (const mode of ['plan', 'dontAsk', 'auto', 'yolo', '', null, 7]) {
+        const response = await request(app)
+          .post('/api/session/ses_claude_1/permission-mode')
+          .send({ mode })
+          .expect(400);
+        expect(response.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      }
+      expect(calls).toEqual([]);
+    });
+
+    test('sets and clears the effort level', async () => {
+      const { app, calls } = createApp();
+
+      const set = await request(app)
+        .post('/api/session/ses_claude_1/effort')
+        .send({ effort: 'max' })
+        .expect(200);
+      const cleared = await request(app)
+        .post('/api/session/ses_claude_1/effort')
+        .send({ effort: null })
+        .expect(200);
+
+      expect(set.body).toEqual({ data: { effort: 'max' } });
+      expect(cleared.body).toEqual({ data: { effort: null } });
+      expect(calls).toEqual([
+        ['setEffort', 'ses_claude_1', 'max'],
+        ['setEffort', 'ses_claude_1', null],
+      ]);
+    });
+
+    test('rejects an effort level outside the SDK set', async () => {
+      const { app, calls } = createApp();
+
+      for (const effort of ['gigantic', 'HIGH', 42]) {
+        const response = await request(app)
+          .post('/api/session/ses_claude_1/effort')
+          .send({ effort })
+          .expect(400);
+        expect(response.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      }
+      expect(calls).toEqual([]);
     });
   });
 

@@ -1,6 +1,7 @@
 import express from 'express';
 
-import { isString } from '../shared/guards.js';
+import { isPlainObject, isString } from '../shared/guards.js';
+import { CLAUDE_EFFORT_LEVELS, CLAUDE_PERMISSION_MODES } from './runner.js';
 
 /**
  * The OpenCode v2 HTTP subset a Claude session serves, mounted at `/api`.
@@ -17,6 +18,8 @@ import { isString } from '../shared/guards.js';
  *   POST   /api/session/:sessionID/move          session.move        -> 204
  *   POST   /api/session/:sessionID/model         session.switchModel -> 204
  *   POST   /api/session/:sessionID/agent         session.switchAgent -> 204
+ *   POST   /api/session/:sessionID/permission-mode                   -> 200 { data: { mode } }
+ *   POST   /api/session/:sessionID/effort                            -> 200 { data: { effort } }
  *   POST   /api/session/:sessionID/prompt        session.prompt      -> 200 { data }
  *   POST   /api/session/:sessionID/generate      session.generate    -> 200 { data }
  *   POST   /api/session/:sessionID/synthetic     session.synthetic   -> 200 { data }
@@ -30,6 +33,9 @@ import { isString } from '../shared/guards.js';
  * `session.move`, `session.switchModel`, `session.switchAgent`,
  * `session.prompt`, `session.generate`, `session.synthetic`,
  * `session.interrupt`, `message.list`, `permission.reply`).
+ * `permission-mode` and `effort` are OpenChamber extensions with no
+ * generated-client method; they keep the `{ data }` envelope so the shared UI
+ * reads them like any other single-record answer.
  * Single-record answers arrive wrapped in `{ data }`; `interrupt` is the one
  * answer the SDK reads raw (`SessionInterruptResponse`), and `message.list`
  * keeps the `{ data, cursor }` page (`SessionMessagesResponse`).
@@ -39,7 +45,8 @@ import { isString } from '../shared/guards.js';
  * tag back to a status (STATUS_BY_TAG in packages/ui/src/lib/opencode/client.ts).
  * `session.generate` declares 400/401/404/503, so its runtime failures answer
  * the tagged 503 (`ServiceUnavailableError`); the route validates the prompt
- * itself and answers 400 for a missing one.
+ * itself and answers 400 for a missing one. A permission mode or effort
+ * outside the supported sets answers the tagged 400 (`InvalidRequestError`).
  *
  * Every session-scoped route answers only for a session the registry owns
  * (`registry.isClaudeSession`); anything else leaves the router through
@@ -52,12 +59,14 @@ import { isString } from '../shared/guards.js';
  *   renameSession: (sessionID: string, title: string) => void | Promise<void>,
  *   removeSession: (sessionID: string) => void | Promise<void>,
  *   moveSession: (sessionID: string, directory: string) => void | Promise<void>,
- *   sendPrompt: (sessionID: string, input: { text: string, id?: string, files?: unknown[], agents?: unknown[], skills?: unknown[], metadata?: object, delivery?: string }) => object | Promise<object>,
+ *   sendPrompt: (sessionID: string, input: { text: string, id?: string, files?: { uri: string, name?: string }[], agents?: unknown[], skills?: unknown[], metadata?: object, delivery?: string }) => object | Promise<object>,
  *   generate: (sessionID: string, prompt: string) => { text: string } | Promise<{ text: string }>,
  *   synthetic: (sessionID: string, input: { id?: string, text: string, description?: string, metadata?: object }) => object | null | Promise<object | null>,
  *   interrupt: (sessionID: string) => boolean | { interrupted?: boolean } | Promise<boolean | { interrupted?: boolean }>,
  *   switchModel: (sessionID: string, model: object) => void | Promise<void>,
  *   switchAgent: (sessionID: string, agent: string) => void | Promise<void>,
+ *   setPermissionMode: (sessionID: string, mode: string) => string | Promise<string>,
+ *   setEffort: (sessionID: string, effort: string | null) => string | null | Promise<string | null>,
  *   getMessages: (sessionID: string, query: { limit?: number, cursor?: string, order?: string }) => { data: unknown[], cursor: object } | Promise<{ data: unknown[], cursor: object }>,
  *   replyPermission: (sessionID: string, requestID: string, decision: string) => boolean | null | Promise<boolean | null>,
  * } }} options
@@ -130,6 +139,25 @@ export function createClaudeRoutes({ registry }) {
     return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
   };
 
+  /**
+   * The prompt's attachments as the runner takes them: objects with a string
+   * `uri` (the shared UI sends a `data:` URI and a `name`). Anything malformed
+   * — a non-array, a non-object entry, a missing or non-string uri — is
+   * dropped, so a bad entry can never reach the runner; no valid entry means
+   * no `files` at all, and the prompt keeps the plain-string path.
+   */
+  const promptFiles = (value) => {
+    if (!Array.isArray(value)) return undefined;
+    const files = [];
+    for (const entry of value) {
+      if (!isPlainObject(entry) || !isString(entry.uri) || entry.uri === '') continue;
+      const file = { uri: entry.uri };
+      if (isString(entry.name) && entry.name !== '') file.name = entry.name;
+      files.push(file);
+    }
+    return files.length > 0 ? files : undefined;
+  };
+
   // session.create — the backend header, not the body, chooses Claude (the
   // proxy re-serializes bodies; a header cannot be lost to that). The client
   // mints the session id and may name the initial agent and model; forward
@@ -194,10 +222,36 @@ export function createClaudeRoutes({ registry }) {
     res.status(204).end();
   }));
 
+  // session.permission-mode — POST /api/session/:sessionID/permission-mode.
+  // An OpenChamber extension (the SDK's `session.update` carries no mode): the
+  // record's metadata holds the mode, a live runner is switched through the
+  // query's own `setPermissionMode`, and the change reaches every client as
+  // `session.metadata.updated`.
+  router.post('/session/:sessionID/permission-mode', forClaudeSession(async (req, res) => {
+    const mode = req.body?.mode;
+    if (!CLAUDE_PERMISSION_MODES.includes(mode)) {
+      return sendError(res, 400, 'InvalidRequestError', 'mode must be default, acceptEdits, or bypassPermissions');
+    }
+    const applied = await registry.setPermissionMode(req.params.sessionID, mode);
+    res.status(200).json({ data: { mode: applied } });
+  }));
+
+  // session.effort — POST /api/session/:sessionID/effort. `effort: null`
+  // clears the selection. The runner reads effort when it is created, so the
+  // change applies from the session's next runner, not the live one.
+  router.post('/session/:sessionID/effort', forClaudeSession(async (req, res) => {
+    const effort = req.body?.effort ?? null;
+    if (effort !== null && !CLAUDE_EFFORT_LEVELS.includes(effort)) {
+      return sendError(res, 400, 'InvalidRequestError', 'effort must be low, medium, high, xhigh, max, or null');
+    }
+    const applied = await registry.setEffort(req.params.sessionID, effort);
+    res.status(200).json({ data: { effort: applied } });
+  }));
+
   // session.prompt — POST /api/session/:sessionID/prompt. The client mints the
   // user message id (its optimistic message reconciles on it) and may attach
   // files, agent mentions, skills, metadata, or a delivery mode; forward them
-  // as they arrived.
+  // as they arrived, with the attachments validated down to `{ uri, name? }`.
   router.post('/session/:sessionID/prompt', forClaudeSession(async (req, res) => {
     const body = req.body ?? {};
     const text = body.text;
@@ -206,7 +260,7 @@ export function createClaudeRoutes({ registry }) {
       data: await registry.sendPrompt(req.params.sessionID, {
         text,
         id: body.id,
-        files: body.files,
+        files: promptFiles(body.files),
         agents: body.agents,
         skills: body.skills,
         metadata: body.metadata,
