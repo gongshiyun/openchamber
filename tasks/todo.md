@@ -32,19 +32,20 @@
 - 已知事项：`buildClaudeLaunchSpec` 无生产调用方（文档已注明）；`settings-helpers` 打包测试与 `lib/opencode` 部分用例为 Windows 环境既有失败；移动端 composer 不在 v1。
 
 ## 收尾冲刺（P1/P2/P3，2026-10-11 起）
-- [ ] P1.1 不支持的入口对 Claude 会话隐藏（compact/command/fork/!/shell/diff/提交信息）
-- [ ] P1.2 挂起权限的恢复（适配器端点 + UI 会话打开时拉取）
-- [ ] P1.3 品牌文案按会话后端显示（错误/状态行不再写 OpenCode）
-- [ ] P1.4 停止埋点 + 权限挂起 30 分钟自动拒绝安全网
-- [ ] P1.5 Goals / 定时任务 / multi-run / walkthrough 入口对 Claude 会话隐藏
-- [ ] P2.1 首回合冷启动提示（"正在启动 Claude…"）
-- [ ] P2.2 用量与成本接入（cost/tokens 累计 + session.usage.updated）
-- [ ] P2.3 标题模型化（首行文本兜底 + haiku 一次性生成）
-- [ ] P2.4 权限模式（default/acceptEdits/bypass）与 effort 切换（适配器端点 + composer 控件）
-- [ ] P2.5 附件支持（图片/文本 → SDK content blocks）；@agent/skills 提及处置；子代理维持工具卡展示
-- [ ] P3.3 CORS 允许头回归测试
-- [ ] P3.4 claude CLI 可用性探测（启用 buildClaudeLaunchSpec）
-- [ ] P3.5 上游提案文档 + VS Code 验证；本地 tag，推送等用户确认
+- [x] P1.1 不支持的入口对 Claude 会话隐藏 — 提交 e66bdee（命令菜单/shell/fork/compact/goals/multi-run/walkthrough + 运行时防护）
+- [x] P1.2 挂起权限的恢复 — 提交 a5f0c33（`GET /api/permission/request` 合并；UI 既有重同步路径自动生效）
+- [x] P1.3 品牌文案按会话后端显示 — 提交 1cb2d52（8 键 × 13 locale）
+- [x] P1.4 停止埋点 + 权限挂起 30 分钟安全网 — 1cb2d52（埋点）+ 317e6e9（park timeout）
+- [x] P1.5 Goals / 定时任务 / multi-run / walkthrough 入口隐藏 — e66bdee（Goals/multi-run/walkthrough 已隐藏；定时任务为全局面板、无会话级入口）
+- [x] P2.1 首回合冷启动提示 — 提交 1cb2d52（"Claude Code is starting…"）
+- [x] P2.2 用量与成本接入 — 提交 6567791（cost 替换/tokens 累计 + session.usage.updated）
+- [x] P2.3 标题模型化 — 提交 6567791（首行兜底 + haiku 生成，不覆盖用户改名）
+- [x] P2.4 权限模式与 effort — 317e6e9（服务端端点）+ e66bdee（composer 控件，13 键 × 13 locale）
+- [x] P2.5 附件支持 — 317e6e9（图片/文本块、256KB/5MB 上限、其余跳过注记）；@agent/skills 提及维持纯文本（无害，意图明确）
+- [x] P3.3 CORS 允许头回归测试 — 提交 8c60b42（提取共享模块 + 12 头钉住）
+- [x] P3.4 claude CLI 可用性探测 — 提交 50f119d（真实 CLI 验证 2.1.283，不阻塞启动）
+- [ ] P3.5 上游提案文档（317b9ee）+ VS Code 验证；本地 tag，推送等用户确认
+- [ ] 总验证：全量 check:changed（运行中）+ 重打包试用版 + 实机验收脚本（sprint-check）+ VS Code 构建
 - 排除项（用户确认）：终端面板（需 VS Spectre 库）、移动端 composer
 
 ## 记录
