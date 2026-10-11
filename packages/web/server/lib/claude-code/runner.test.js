@@ -864,6 +864,33 @@ describe('interrupt and failure', () => {
     expect(runner.isBusy()).toBe(false);
   });
 
+  test('interrupt denies a parked permission and clears it from the list', async () => {
+    const { runner, fake, spawns, emitted } = createHarness();
+
+    await runner.send({ text: 'long task', messageID: 'msg_1' });
+    const canUseTool = spawns[0].options.canUseTool;
+    const answer = canUseTool('Bash', { command: 'rm -rf build' }, { toolUseID: 'toolu_1' });
+    await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+    const request = eventsOfType(emitted, 'permission.asked')[0];
+    expect(runner.pendingPermissionRequests()).toEqual([request.data]);
+
+    const interrupted = runner.interrupt();
+    // The parked approval dies with the turn: denied, reported, out of the list.
+    expect(await answer).toEqual({ behavior: 'deny', message: 'Interrupted' });
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+    expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(1);
+    expect(eventsOfType(emitted, 'permission.replied')[0].data).toEqual({
+      sessionID: SESSION_ID,
+      requestID: request.data.id,
+      reply: 'reject',
+    });
+
+    fake.finish();
+    await interrupted;
+    await waitFor(() => eventsOfType(emitted, 'session.execution.interrupted').length === 1);
+    expect(runner.isBusy()).toBe(false);
+  });
+
   test('interrupt settles from the next result instead of translating it', async () => {
     const { runner, fake, emitted } = createHarness();
 
@@ -1022,6 +1049,34 @@ describe('interrupt and failure', () => {
     expect(fake.calls.closes).toBe(1);
     expect(runner.isBusy()).toBe(false);
     expect(eventsOfType(emitted, 'session.execution.interrupted')[0].data.reason).toBe('idle');
+  });
+
+  test('a park left behind by a settled turn does not keep the runner alive', async () => {
+    const { runner, fake, spawns, emitted, idleCalls } = createHarness({ factory: { idleMs: 30 } });
+
+    await runner.send({ text: 'run tests', messageID: 'msg_1' });
+    const canUseTool = spawns[0].options.canUseTool;
+    const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+    await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
+    const request = eventsOfType(emitted, 'permission.asked')[0];
+
+    // The turn settles (e.g. an interrupt racing the request) while the
+    // approval is still parked.
+    fake.push(successResult());
+    await waitFor(() => runner.isBusy() === false);
+    expect(runner.pendingPermissionRequests()).toEqual([request.data]);
+
+    // The stale park must not keep the runner alive: the next idle window
+    // rejects it (the interrupt path, so clients clear it) and then reaps.
+    await waitFor(() => idleCalls.length === 1);
+    expect(await answer).toEqual({ behavior: 'deny', message: 'Interrupted' });
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+    expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(1);
+    expect(eventsOfType(emitted, 'permission.replied')[0].data).toEqual({
+      sessionID: SESSION_ID,
+      requestID: request.data.id,
+      reply: 'reject',
+    });
   });
 
   test('dispose is idempotent and closes the query once', async () => {

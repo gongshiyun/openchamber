@@ -32,16 +32,19 @@
 // `setPermissionMode`; `options.effort` is read when the runner is created.
 //
 // Interrupt: `interrupt()` asks the SDK to stop and settles the turn from the
-// next result or stream end. The SDK is expected to settle within
-// INTERRUPT_SETTLE_MS; when it does not, the runner settles the turn itself so
-// the session does not stay busy forever.
+// next result or stream end. A permission request parked for that turn is
+// denied with the turn (the user stopping the turn is not going to answer it),
+// which also clears it from `pendingPermissionRequests()`. The SDK is expected
+// to settle within INTERRUPT_SETTLE_MS; when it does not, the runner settles
+// the turn itself so the session does not stay busy forever.
 //
 // Idle: the idle timer resets on send, on every SDK message, and on permission
 // activity. On fire the runner settles an open turn as interrupted, disposes
-// itself, and reports to `onIdle` so the registry can drop it. A turn parked
-// on a permission request is waiting on the user, not idle: the fire resets
-// the window and keeps the runner alive instead. The next prompt resumes the
-// Claude session through `resume`.
+// itself, and reports to `onIdle` so the registry can drop it. A running turn
+// parked on a permission request is waiting on the user, not idle: the fire
+// resets the window and keeps the runner alive instead; a park left behind by
+// a settled turn is stale and is rejected and reaped with it. The next prompt
+// resumes the Claude session through `resume`.
 //
 // Usage: a turn that settles from an SDK `result` carries the session's
 // running `total_cost_usd` and the turn's token `usage`; the runner reports
@@ -591,11 +594,17 @@ export function createRunnerFactory({
     const handleIdle = async () => {
       idleTimer = null;
       if (state.disposed) return;
-      // A parked request is a turn waiting on the user, not an idle session:
-      // restart the window instead of settling and disposing under it.
+      // A running turn parked on a permission request is waiting on the user,
+      // not idle: restart the window instead of settling and disposing under it.
+      // A park left behind by a settled turn is stale: it is rejected through
+      // the same path an interrupt uses, so the clients' docks clear, and it
+      // must not keep the runner alive.
       if (pendingPermissions.size > 0) {
-        resetIdleTimer();
-        return;
+        if (state.busy) {
+          resetIdleTimer();
+          return;
+        }
+        for (const entry of [...pendingPermissions.values()]) entry.abort();
       }
       if (state.busy) settleTurnAsAborted('idle');
       await dispose();
@@ -637,8 +646,18 @@ export function createRunnerFactory({
       }, INTERRUPT_SETTLE_MS);
       interruptTimer.unref?.();
       const query = state.query;
+      let interrupting;
       try {
-        await query?.interrupt?.();
+        interrupting = query?.interrupt?.();
+      } catch {
+        interrupting = null;
+      }
+      // A turn parked on an approval has no approval left once the user stops
+      // it: deny the parked requests so the list and the dock clear, and the
+      // SDK is not left blocking on a request nobody owns.
+      for (const entry of [...pendingPermissions.values()]) entry.abort();
+      try {
+        await interrupting;
       } catch {
         // The stream still has to settle the turn; the timeout above covers a
         // control request that never completes.
@@ -727,6 +746,7 @@ export function createRunnerFactory({
         suggestions: options.suggestions,
         wireRequest,
         resolve: resolveRequest,
+        abort: onAbort,
         cleanup: () => {
           options.signal?.removeEventListener?.('abort', onAbort);
           clearParkTimer();
