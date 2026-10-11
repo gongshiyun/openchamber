@@ -18,6 +18,7 @@ import { isString } from '../shared/guards.js';
  *   POST   /api/session/:sessionID/model         session.switchModel -> 204
  *   POST   /api/session/:sessionID/agent         session.switchAgent -> 204
  *   POST   /api/session/:sessionID/prompt        session.prompt      -> 200 { data }
+ *   POST   /api/session/:sessionID/synthetic     session.synthetic   -> 200 { data }
  *   POST   /api/session/:sessionID/interrupt     session.interrupt   -> 200 { interrupted }
  *   GET    /api/session/:sessionID/message       message.list        -> 200 { data, cursor }
  *   POST   /api/session/:sessionID/permission/:permID/reply          -> 204
@@ -26,7 +27,8 @@ import { isString } from '../shared/guards.js';
  * node_modules/@opencode/client/dist/chunks/service-probe-9h52wrcy.js
  * (`session.create`, `session.get`, `session.update`, `session.remove`,
  * `session.move`, `session.switchModel`, `session.switchAgent`,
- * `session.prompt`, `session.interrupt`, `message.list`, `permission.reply`).
+ * `session.prompt`, `session.synthetic`, `session.interrupt`, `message.list`,
+ * `permission.reply`).
  * Single-record answers arrive wrapped in `{ data }`; `interrupt` is the one
  * answer the SDK reads raw (`SessionInterruptResponse`), and `message.list`
  * keeps the `{ data, cursor }` page (`SessionMessagesResponse`).
@@ -47,6 +49,7 @@ import { isString } from '../shared/guards.js';
  *   removeSession: (sessionID: string) => void | Promise<void>,
  *   moveSession: (sessionID: string, directory: string) => void | Promise<void>,
  *   sendPrompt: (sessionID: string, input: { text: string, id?: string, files?: unknown[], agents?: unknown[], skills?: unknown[], metadata?: object, delivery?: string }) => object | Promise<object>,
+ *   synthetic: (sessionID: string, input: { id?: string, text: string, description?: string, metadata?: object }) => object | null | Promise<object | null>,
  *   interrupt: (sessionID: string) => boolean | { interrupted?: boolean } | Promise<boolean | { interrupted?: boolean }>,
  *   switchModel: (sessionID: string, model: object) => void | Promise<void>,
  *   switchAgent: (sessionID: string, agent: string) => void | Promise<void>,
@@ -203,6 +206,25 @@ export function createClaudeRoutes({ registry }) {
         skills: body.skills,
         metadata: body.metadata,
         delivery: body.delivery,
+      }),
+    });
+  }));
+
+  // session.synthetic — POST /api/session/:sessionID/synthetic. Context the UI
+  // admits ahead of a prompt: it never starts a turn, the next prompt carries
+  // it. `delivery`/`resume` are ignored (v1 has no inbox or resume here).
+  router.post('/session/:sessionID/synthetic', forClaudeSession(async (req, res) => {
+    const body = req.body ?? {};
+    const text = body.text;
+    if (!isString(text) || text === '') {
+      return sendError(res, 400, 'InvalidRequestError', 'synthetic text is required');
+    }
+    res.status(200).json({
+      data: await registry.synthetic(req.params.sessionID, {
+        id: body.id,
+        text,
+        description: body.description,
+        metadata: body.metadata,
       }),
     });
   }));

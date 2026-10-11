@@ -99,6 +99,16 @@ const errorMessage = (error) => {
   return 'Claude Code run failed';
 };
 
+/**
+ * The content of the one user turn v1 sends. OpenCode delivers synthetic
+ * messages as context messages of their own ahead of a prompt; v1 folds their
+ * texts into the turn ahead of the user's, separated by blank lines.
+ */
+const promptContent = (text, context) => {
+  if (!Array.isArray(context) || context.length === 0) return text;
+  return `${context.join('\n\n')}\n\n${text}`;
+};
+
 /** Push-based async iterable: the SDK pulls user messages as they are sent. */
 const createInputQueue = () => {
   const values = [];
@@ -411,15 +421,18 @@ export function createRunnerFactory({
     // Public API
     // -----------------------------------------------------------------------
 
-    const send = async ({ text, messageID } = {}) => {
+    const send = async ({ text, messageID, context } = {}) => {
       if (state.disposed) throw new Error(`Claude session ${sessionID} is no longer running`);
       const id = messageID ?? createMessageId();
       transcript.beginUserMessage({ text, messageID: id });
+      // The transcript keeps the user's own text; the synthetic records carry
+      // the context, and the SDK turn leads with it (see `promptContent`).
+      const content = promptContent(text, context);
       if (state.busy) {
-        pendingSends.push({ text, messageID: id });
+        pendingSends.push({ text: content, messageID: id });
         return;
       }
-      await startTurn({ text, messageID: id });
+      await startTurn({ text: content, messageID: id });
     };
 
     const interrupt = async () => {

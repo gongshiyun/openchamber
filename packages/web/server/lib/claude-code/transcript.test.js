@@ -127,6 +127,35 @@ describe('claude-code transcript records', () => {
     expect(record.parts).toEqual([{ type: 'text', text: 'Hello Claude' }]);
   });
 
+  test('beginSyntheticMessage creates one synthetic record with no parts', () => {
+    const { transcript } = createTestTranscript();
+
+    transcript.beginSyntheticMessage({
+      text: 'Quoted context',
+      messageID: 'msg_ctx_1',
+      description: 'Selection',
+      metadata: { kind: 'quote' },
+    });
+
+    const [record] = transcript.listRecords({ limit: 10 }).items;
+    expect(record.info.id).toBe('msg_ctx_1');
+    expect(record.info.type).toBe('synthetic');
+    expect(record.info.text).toBe('Quoted context');
+    expect(record.info.description).toBe('Selection');
+    expect(record.info.metadata).toEqual({ kind: 'quote' });
+    expect(Number.isFinite(record.info.time.created)).toBe(true);
+    expect(record.parts).toEqual([]);
+    expect(transcript.getRecord('msg_ctx_1')).toEqual(record);
+
+    // The optional fields stay absent when the caller sends none.
+    transcript.beginSyntheticMessage({ text: 'Bare context', messageID: 'msg_ctx_2' });
+    const bare = transcript.getRecord('msg_ctx_2').info;
+    expect(bare.type).toBe('synthetic');
+    expect(bare.text).toBe('Bare context');
+    expect(Number.isFinite(bare.time.created)).toBe(true);
+    expect(Object.keys(bare).sort()).toEqual(['id', 'text', 'time', 'type']);
+  });
+
   test('a full assistant turn builds one record with text and tool parts', () => {
     const { transcript } = createTestTranscript();
 
@@ -361,6 +390,12 @@ describe('claude-code transcript records', () => {
     const { transcript, memory } = createTestTranscript();
     driveTurn(transcript, { userID: 'msg_user_1', userText: 'first', assistantID: 'msg_assistant_1', text: 'One.' });
     driveTurn(transcript, { userID: 'msg_user_2', userText: 'second', assistantID: 'msg_assistant_2', text: 'Two.' });
+    transcript.beginSyntheticMessage({
+      text: 'Pinned context',
+      messageID: 'msg_ctx_1',
+      description: 'Pinned',
+      metadata: { source: 'todo' },
+    });
     await transcript.flush();
 
     const reloaded = createTranscript({

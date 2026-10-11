@@ -12,6 +12,8 @@
  *
  * Wire fidelity (the shapes are pinned by transcript.contract.test.js):
  *   user      { id, type: 'user', time: { created }, text }
+ *   synthetic { id, type: 'synthetic', time: { created }, text, description?,
+ *               metadata? }
  *   assistant { id, type: 'assistant', time: { created, completed? }, agent,
  *               model: { providerID, id, variant? }, content: [items] }
  *   text      { type: 'text', text }
@@ -35,6 +37,7 @@
  *
  * Persistence is append-only JSONL, one op per line:
  *   { kind: 'user',      op: 'create', messageID, created, text }
+ *   { kind: 'synthetic', op: 'create', messageID, created, text, description?, metadata? }
  *   { kind: 'assistant', op: 'create', messageID, created, agent?, model }
  *   { kind: 'assistant', op: 'patch',  messageID, patch: { time, finish, ... } }
  *   { kind: 'assistant', op: 'part',   messageID, partID, part }
@@ -196,6 +199,13 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
       const text = isString(op.text) ? op.text : '';
       const info = { id: op.messageID, type: 'user', time: { created }, text };
       records.push({ info, parts: [{ type: 'text', text }] });
+    } else if (op.kind === 'synthetic') {
+      // The UI projects this record as a context block of its own; it carries
+      // no parts and never changes after creation.
+      const info = { id: op.messageID, type: 'synthetic', time: { created }, text: isString(op.text) ? op.text : '' };
+      if (isString(op.description)) info.description = op.description;
+      if (isPlainObject(op.metadata)) info.metadata = op.metadata;
+      records.push({ info, parts: [] });
     } else {
       const info = {
         id: op.messageID,
@@ -508,6 +518,26 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
     enqueue(op);
   };
 
+  /**
+   * One synthetic context message: the wire record the UI renders as a context
+   * block ahead of the turn that carries it. Like a user message it never
+   * changes after creation; unlike one it has no parts.
+   */
+  const beginSyntheticMessage = ({ text, messageID, description, metadata } = {}) => {
+    if (closed || !isString(messageID) || recordByID.has(messageID)) return;
+    const op = {
+      kind: 'synthetic',
+      op: 'create',
+      messageID,
+      created: Date.now(),
+      text: isString(text) ? text : '',
+    };
+    if (isString(description)) op.description = description;
+    if (isPlainObject(metadata)) op.metadata = metadata;
+    applyOp(op);
+    enqueue(op);
+  };
+
   const applyWireEvent = (event) => {
     if (closed) return;
     for (const op of wireOps(event)) {
@@ -576,5 +606,5 @@ export const createTranscript = ({ sessionID, directory, filePath, fsImpl = fsPr
     closed = true;
   };
 
-  return { beginUserMessage, applyWireEvent, listRecords, getRecord, flush, load, close };
+  return { beginUserMessage, beginSyntheticMessage, applyWireEvent, listRecords, getRecord, flush, load, close };
 };

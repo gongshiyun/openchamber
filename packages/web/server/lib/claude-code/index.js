@@ -527,14 +527,59 @@ export function createClaudeCodeRuntime({
     return entry;
   };
 
+  /**
+   * Records one synthetic context message, publishes it as the wire event the
+   * UI projects into a context block, and keeps its text for the next prompt.
+   * OpenCode delivers synthetic messages as context messages of their own
+   * ahead of a turn; v1 folds the pending texts into the next user turn (see
+   * `sendPrompt`), so nothing starts a turn here. `delivery` and `resume` from
+   * the payload are ignored for the same reason.
+   */
+  const synthetic = async (sessionID, input = {}) => {
+    const record = requireRecord(sessionID);
+    const text = isString(input.text) ? input.text : '';
+    const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
+    const transcript = await transcriptFor(record);
+    transcript.beginSyntheticMessage({
+      messageID,
+      text,
+      description: input.description,
+      metadata: input.metadata,
+    });
+    (record.pendingContext ??= []).push(text);
+    // The event data carries the same fields the transcript record kept.
+    const data = { sessionID, text };
+    if (isString(input.description)) data.description = input.description;
+    if (isPlainObject(input.metadata)) data.metadata = input.metadata;
+    emitWire(
+      {
+        // The UI derives the message id from the envelope (`messageIdFromEvent`
+        // in packages/ui/src/lib/opencode/events.ts`), so the event id is the
+        // message id in the event id space.
+        id: messageID.replace(/^msg_/, 'evt_'),
+        type: 'session.synthetic',
+        created: now(),
+        data,
+        location: { directory: record.directory },
+      },
+      record,
+    );
+    return transcript.getRecord(messageID)?.info ?? null;
+  };
+
   const sendPrompt = async (sessionID, input = {}) => {
     const record = requireRecord(sessionID);
     const runner = await runnerEntryFor(record).promise;
     const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
-    // v1 carries the text and the client-minted message id only. Files, agent
-    // mentions, skills, metadata and delivery reach this route but have no
-    // runner path yet; they are dropped until a later task adds them.
-    await runner.send({ text: input.text, messageID });
+    // v1 carries the text, the client-minted message id, and the synthetic
+    // context admitted since the last prompt. Files, agent mentions, skills,
+    // metadata and delivery reach this route but have no runner path yet;
+    // they are dropped until a later task adds them.
+    const context = record.pendingContext ?? [];
+    record.pendingContext = [];
+    const send = { text: input.text, messageID };
+    if (context.length > 0) send.context = context;
+    await runner.send(send);
     return { id: messageID };
   };
 
@@ -583,6 +628,7 @@ export function createClaudeCodeRuntime({
     removeSession,
     moveSession,
     sendPrompt,
+    synthetic,
     interrupt,
     switchModel,
     switchAgent,

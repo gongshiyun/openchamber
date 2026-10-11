@@ -19,7 +19,8 @@ import request from 'supertest';
 import { OpenCode } from '@opencode/client';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { projectSession } from '../../../../ui/src/lib/opencode/projection.ts';
+import { messageIdFromEvent } from '../../../../ui/src/lib/opencode/events.ts';
+import { projectMessages, projectSession } from '../../../../ui/src/lib/opencode/projection.ts';
 import { createProjectIdFromPath as uiProjectIdFromPath } from '../../../../ui/src/lib/projectId.ts';
 import { createClaudeCodeRuntime } from './index.js';
 
@@ -480,6 +481,94 @@ describe('claude code runtime', () => {
       expect(oldestFirst.body.data.map((message) => message.id)).toEqual(['msg_user_1']);
       expect(oldestFirst.body.cursor).toEqual({ next: 'msg_user_1' });
       expect(await fileExists(transcriptPath('ses_msg_1'))).toBe(true);
+    });
+  });
+
+  describe('synthetic context', () => {
+    test('records and emits a synthetic message, then carries it into the next prompt only', async () => {
+      const { runtime, hub, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_ctx_1', location: { directory: 'C:\\work\\ctx' } }).expect(200);
+
+      const metadata = { kind: 'quote' };
+      const admitted = await request(app)
+        .post('/api/session/ses_ctx_1/synthetic')
+        .send({ id: 'msg_ctx_1', text: 'The failing test', description: 'Quoted selection', metadata })
+        .expect(200);
+      expect(admitted.body.data).toMatchObject({ id: 'msg_ctx_1', type: 'synthetic', text: 'The failing test' });
+
+      // The transcript is the source of message.list, and the record survives
+      // the UI's own projection.
+      const page = await request(app).get('/api/session/ses_ctx_1/message').expect(200);
+      expect(page.body.data).toEqual([
+        expect.objectContaining({
+          id: 'msg_ctx_1',
+          type: 'synthetic',
+          text: 'The failing test',
+          description: 'Quoted selection',
+          metadata,
+        }),
+      ]);
+      const [projected] = projectMessages(page.body.data, 'ses_ctx_1');
+      expect(projected.message).toMatchObject({
+        id: 'msg_ctx_1',
+        sessionID: 'ses_ctx_1',
+        role: 'synthetic',
+        text: 'The failing test',
+        description: 'Quoted selection',
+        metadata,
+      });
+
+      // The wire event carries the client's message id in the event id space,
+      // which is exactly what the UI reads back (`messageIdFromEvent`).
+      const emitted = hub.ofType('session.synthetic');
+      expect(emitted).toEqual([
+        expect.objectContaining({
+          id: 'evt_ctx_1',
+          created: CLOCK,
+          data: { sessionID: 'ses_ctx_1', text: 'The failing test', description: 'Quoted selection', metadata },
+          location: { directory: 'C:\\work\\ctx' },
+        }),
+      ]);
+      expect(messageIdFromEvent(emitted[0].id)).toBe('msg_ctx_1');
+
+      // The next prompt carries the context; the one after it does not.
+      await request(app).post('/api/session/ses_ctx_1/prompt').send({ id: 'msg_p_1', text: 'Fix it' }).expect(200);
+      await request(app).post('/api/session/ses_ctx_1/prompt').send({ id: 'msg_p_2', text: 'Again' }).expect(200);
+      expect(runners.runners[0].sends).toEqual([
+        { text: 'Fix it', messageID: 'msg_p_1', context: ['The failing test'] },
+        { text: 'Again', messageID: 'msg_p_2' },
+      ]);
+    });
+
+    test('mints the message id when the client sends none', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_ctx_mint', location: { directory: 'C:\\work\\ctx' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_ctx_mint/synthetic')
+        .send({ text: 'Auto id' })
+        .expect(200);
+
+      const [event] = hub.ofType('session.synthetic');
+      expect(event.id).toMatch(/^evt_/);
+      const page = await request(app).get('/api/session/ses_ctx_mint/message').expect(200);
+      expect(page.body.data[0].id).toBe(messageIdFromEvent(event.id));
+    });
+
+    test('leaves an unknown session to the proxy', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      await request(app)
+        .post('/api/session/ses_missing/synthetic')
+        .send({ text: 'Context' })
+        .expect(418);
+      expect(hub.ofType('session.synthetic')).toEqual([]);
     });
   });
 

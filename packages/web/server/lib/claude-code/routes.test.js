@@ -28,6 +28,7 @@ const createRegistry = (overrides = {}) => {
     removeSession: record('removeSession', undefined),
     moveSession: record('moveSession', undefined),
     sendPrompt: record('sendPrompt', { id: 'msg_1' }),
+    synthetic: record('synthetic', { id: 'msg_synth_1', type: 'synthetic', text: 'Context' }),
     interrupt: record('interrupt', { interrupted: true }),
     switchModel: record('switchModel', undefined),
     switchAgent: record('switchAgent', undefined),
@@ -77,11 +78,12 @@ describe('claude session routes', () => {
       await request(app).post(`/api/session/${session}/move`).send({ directory: '/repo/other' }).expect(418);
       await request(app).post(`/api/session/${session}/model`).send({ model: { id: 'opus', providerID: 'claude-code' } }).expect(418);
       await request(app).post(`/api/session/${session}/agent`).send({ agent: 'build' }).expect(418);
+      await request(app).post(`/api/session/${session}/synthetic`).send({ text: 'context' }).expect(418);
       await request(app).post(`/api/session/${session}/interrupt`).expect(418);
       await request(app).get(`/api/session/${session}/message`).expect(418);
       await request(app).post(`/api/session/${session}/permission/perm_1/reply`).send({ decision: 'once' }).expect(418);
 
-      expect(terminal).toHaveLength(9);
+      expect(terminal).toHaveLength(10);
       expect(calls).toEqual([]);
     });
 
@@ -222,6 +224,52 @@ describe('claude session routes', () => {
       const response = await request(app).post('/api/session/ses_claude_1/interrupt').expect(200);
 
       expect(response.body).toEqual({ interrupted: false });
+    });
+  });
+
+  describe('synthetic context', () => {
+    test('forwards a synthetic message with its text, description and metadata', async () => {
+      const { app, calls } = createApp();
+      const metadata = { kind: 'selection' };
+
+      const response = await request(app)
+        .post('/api/session/ses_claude_1/synthetic')
+        .send({
+          id: 'msg_ctx_1',
+          text: 'The failing test',
+          description: 'Quoted selection',
+          metadata,
+          delivery: 'queue',
+          resume: false,
+        })
+        .expect(200);
+
+      expect(calls).toEqual([
+        ['synthetic', 'ses_claude_1', {
+          id: 'msg_ctx_1',
+          text: 'The failing test',
+          description: 'Quoted selection',
+          metadata,
+        }],
+      ]);
+      expect(response.body).toEqual({ data: { id: 'msg_synth_1', type: 'synthetic', text: 'Context' } });
+    });
+
+    test('rejects a synthetic message without text', async () => {
+      const { app, calls } = createApp();
+
+      const missing = await request(app)
+        .post('/api/session/ses_claude_1/synthetic')
+        .send({ id: 'msg_ctx_1' })
+        .expect(400);
+      const empty = await request(app)
+        .post('/api/session/ses_claude_1/synthetic')
+        .send({ text: '' })
+        .expect(400);
+
+      expect(missing.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      expect(empty.body).toMatchObject({ _tag: 'InvalidRequestError' });
+      expect(calls).toEqual([]);
     });
   });
 
@@ -395,6 +443,15 @@ describe('claude session routes', () => {
       });
       expect(prompted).toEqual({ id: 'msg_1' });
 
+      const admitted = await client.session.synthetic({
+        sessionID: 'ses_claude_client',
+        id: 'msg_ctx_1',
+        text: 'Context',
+        description: 'Selection',
+        resume: false,
+      });
+      expect(admitted).toEqual({ id: 'msg_synth_1', type: 'synthetic', text: 'Context' });
+
       const interrupted = await client.session.interrupt({ sessionID: 'ses_claude_client' });
       expect(interrupted).toEqual({ interrupted: true });
 
@@ -413,6 +470,12 @@ describe('claude session routes', () => {
           directory: '/repo/app',
         }],
         ['sendPrompt', 'ses_claude_client', { text: 'Fix it', id: 'msg_client_1' }],
+        ['synthetic', 'ses_claude_client', {
+          id: 'msg_ctx_1',
+          text: 'Context',
+          description: 'Selection',
+          metadata: undefined,
+        }],
         ['interrupt', 'ses_claude_client'],
         ['getMessages', 'ses_claude_client', { limit: 10, cursor: undefined, order: undefined }],
         ['replyPermission', 'ses_claude_client', 'perm_1', 'always'],

@@ -32,13 +32,18 @@ The shared UI talks to every backend through `@opencode/client` 2.x, whose gener
 | `/api/session/:sessionID/model` | POST | `204` |
 | `/api/session/:sessionID/agent` | POST | `204` |
 | `/api/session/:sessionID/prompt` | POST | `200 { data }` |
+| `/api/session/:sessionID/synthetic` | POST | `200 { data }` |
 | `/api/session/:sessionID/interrupt` | POST | `200 { interrupted }` |
 | `/api/session/:sessionID/message` | GET | `200 { data, cursor }` |
 | `/api/session/:sessionID/permission/:permID/reply` | POST | `204` |
 
-Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, or decision; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission. The shared UI maps the tag back to a status.
+Every session-scoped route answers only for a session the registry owns (`isClaudeSession`); anything else leaves the router through `next('router')`, and the OpenCode proxy keeps serving it. Errors use OpenCode's tagged body `{ _tag, message }`: `400 InvalidRequestError` for a missing title, directory, prompt text, synthetic text, or decision; `404 SessionNotFoundError` / `PermissionNotFoundError` for an unknown session or permission. The shared UI maps the tag back to a status. `session.synthetic` is the context channel the UI uses ahead of a prompt: it answers `200 { data }` with the recorded message and never starts a turn (see Synthetic context below).
 
 `message.list` keeps the OpenCode v2 page semantics: `order` defaults to newest first, `cursor` is a message id the page starts strictly after, and `next` is present only while more records remain in the walk direction. History answers from the transcript, so it works with no runner at all.
+
+### Synthetic context
+
+`POST /api/session/:sessionID/synthetic` admits one context item (a quoted selection, terminal output, PR checks, skill instructions) as a `synthetic` message before the prompt that carries it. The registry records it in the transcript — so it shows in `message.list` history and, as the `session.synthetic` wire event, in every live stream — and answers `200 { data }` with the recorded wire record; the envelope id is the client's message id in the event id space (`msg_` → `evt_`), so the optimistic context block the UI already rendered reconciles in place. Nothing starts a turn: the admitted texts wait on the session record, and the next `sendPrompt` hands them to the runner, which leads the SDK turn's content with them separated by blank lines (the transcript's user record keeps the user's own text). The list is cleared once the prompt is sent — a failed send does not roll it back — and the payload's `delivery` and `resume` are ignored in v1.
 
 ### Creating a Claude session
 
@@ -54,13 +59,15 @@ Every event is an OpenCode v2 wire shape, injected into the server's global hub 
 
 The exact list:
 
-- Registry events (`index.js`): `session.created`, `session.renamed`, `session.moved`, `session.deleted`, `session.model.selected`, `session.agent.selected` (only when the value changes), `session.metadata.updated`.
+- Registry events (`index.js`): `session.created`, `session.renamed`, `session.moved`, `session.deleted`, `session.model.selected`, `session.agent.selected` (only when the value changes), `session.metadata.updated`, `session.synthetic`.
 - Runner events (`runner.js` / `translator.js`):
   - execution: `session.execution.started`, `session.execution.succeeded`, `session.execution.interrupted` (`reason: 'user' | 'idle'`), `session.execution.failed`
   - steps: `session.step.started`, `session.step.ended`, `session.step.failed`
   - content: `session.text.started` / `session.text.delta` / `session.text.ended`, `session.reasoning.started` / `session.reasoning.delta` / `session.reasoning.ended`
   - tools: `session.tool.input.started` / `session.tool.input.delta` / `session.tool.input.ended`, `session.tool.success`, `session.tool.failed`
   - permissions: `permission.asked`, `permission.replied`
+
+`session.synthetic` is the one registry event whose envelope id is load-bearing: it is the client's message id with `msg_` swapped for `evt_`, because the UI derives the message it updates from the event id (`messageIdFromEvent` in `packages/ui/src/lib/opencode/events.ts`). Its data is `{ sessionID, text, description?, metadata? }`, with the optional fields present only when the caller sent them.
 
 The module emits no `session.status` and no `session.idle` of its own; v2 derives live status from the execution events, and the UI's `session.error` comes from `session.execution.failed` — the same reading as OpenCode's own stream. The translator's output-side vocabulary (`message.updated`, `session.error`, ...) is never emitted as a wire event.
 
@@ -114,7 +121,7 @@ All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so
 
 - Permission mode is fixed at the SDK's `'default'`; there is no plan / acceptEdits / bypass switch, and no UI for one.
 - No usage or cost display. Session records carry `cost: 0` and zero tokens (the UI's `Session` requires the fields); per-message cost and tokens from the SDK result are recorded in the transcript, but v1 surfaces no session-level usage view for Claude sessions.
-- The prompt route accepts files, agent mentions, skills, metadata, and a delivery mode, but v1 carries only the text and the client-minted message id to the runner; the rest is dropped.
+- The prompt route accepts files, agent mentions, skills, metadata, and a delivery mode, but v1 carries only the text, the client-minted message id, and the context admitted through `session.synthetic` to the runner; files, agent mentions, skills, metadata, and delivery are dropped.
 - `POST /api/session/:id/agent` records the selection and emits `session.agent.selected`, but the runner's step events always report the translator's fixed agent (`claude`).
 - SSE: Claude frames ride every `/api/event` stream, not only global ones — the proxy filters by session id, not by directory, so a directory-scoped stream also carries Claude frames of other directories. This is deliberate: a Claude session has no OpenCode upstream of its own (see `../opencode/DOCUMENTATION.md`).
 - A move does not dispose a live runner (see Lifecycle).

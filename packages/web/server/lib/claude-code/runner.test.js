@@ -269,6 +269,26 @@ describe('turns', () => {
     expect(runner.isBusy()).toBe(false);
   });
 
+  test('a prompt with synthetic context prepends it to the SDK message content', async () => {
+    const { runner, promptMessages, transcript } = createHarness();
+
+    await runner.send({
+      text: 'Fix the failing test',
+      messageID: 'msg_ctx_turn',
+      context: ['The test output:', 'ENOENT: no such file'],
+    });
+
+    await waitFor(() => promptMessages.length === 1);
+    expect(promptMessages[0]).toEqual({
+      type: 'user',
+      message: { role: 'user', content: 'The test output:\n\nENOENT: no such file\n\nFix the failing test' },
+      parent_tool_use_id: null,
+    });
+    // The transcript keeps the user's own text; the synthetic records carry
+    // the context blocks.
+    expect(transcript.getRecord('msg_ctx_turn').info.text).toBe('Fix the failing test');
+  });
+
   test('two turns mint distinct assistant messages', async () => {
     const { runner, fake, emitted } = createHarness();
 

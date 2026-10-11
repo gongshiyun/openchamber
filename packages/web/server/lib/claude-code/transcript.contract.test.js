@@ -135,6 +135,29 @@ describe('Claude transcript -> UI message projection contract', () => {
     expect(toolPart.state.output).toBe('a.txt');
   });
 
+  test('a synthetic context record projects to a synthetic domain message', () => {
+    const transcript = createTestTranscript();
+
+    transcript.beginSyntheticMessage({
+      messageID: 'msg_synthetic_contract',
+      text: 'The failing test',
+      description: 'Quoted selection',
+      metadata: { kind: 'quote' },
+    });
+
+    const projected = projectRecords(transcript);
+    expect(projected).toHaveLength(1);
+    expect(projected[0].message).toMatchObject({
+      id: 'msg_synthetic_contract',
+      sessionID: SESSION_ID,
+      role: 'synthetic',
+      text: 'The failing test',
+      description: 'Quoted selection',
+      metadata: { kind: 'quote' },
+    });
+    expect(projected[0].parts).toEqual([]);
+  });
+
   test('a streaming tool part projects to the pending domain state with raw input', () => {
     const transcript = createTestTranscript();
 
