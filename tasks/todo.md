@@ -45,9 +45,11 @@
 - [x] P3.3 CORS 允许头回归测试 — 提交 8c60b42（提取共享模块 + 12 头钉住）
 - [x] P3.4 claude CLI 可用性探测 — 提交 50f119d（真实 CLI 验证 2.1.283，不阻塞启动）
 - [x] P3.5 上游提案文档（317b9ee）+ VS Code 验证（type-check/build 0 错误；webview 产物含后端选择器与 Claude 控件；测试 59/62 文件通过，3 个失败为 git/版本解析环境性既有失败——分支仅改过 settings-registry.json 一条目，失败文件不依赖它）
-- [x] 总验证：全量 check:changed（106+ 文件，全部 0）+ 试用版重打包 + 实机验收 sprint-check（创建/权限模式/effort/generate/用量/标题/挂起权限列表/中断清理，全部 PASS）
-- [x] 实机验收暴露并修复：中断时挂起审批即刻作废（permission.replied reject + 出列表）；陈旧停靠（回合结束后遗留）由空闲回收器拒绝并回收，不再形成僵尸
-- [x] 本地 tag `claude-code-backend-v1`（23c06b4，42 提交）；推送等用户确认（用户规则：推送前检查确认）
+- [x] 总验证：全量 check:changed（106 文件，全部 0）+ 试用版重打包 + 实机验收 sprint-check（创建/权限模式/effort/generate/用量/标题/挂起权限列表/中断清理/停止后可用，**连跑 3 次全部 PASS**）
+- [x] 实机验收暴露并修复两个真实缺陷（均有回归测试）：
+  - 中断时挂起审批即刻作废（permission.replied reject + 出列表）— 23c06b4
+  - Agent SDK 不取消回合结束时的停靠审批：被拒后的重试停靠会存活到空闲回收（15 分钟）→ 回合结束统一作废、陈旧工具调用拒绝停靠、陈旧流消息不再翻译 — c672eed
+- [x] 本地 tag `claude-code-backend-v1` → c672eed（最终验证状态，42+ 提交）；推送等用户确认（用户规则：推送前检查确认）
 - 排除项（用户确认）：终端面板（需 VS Spectre 库）、移动端 composer
 
 ## 记录
