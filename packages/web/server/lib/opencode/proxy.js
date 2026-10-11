@@ -11,6 +11,8 @@ import {
 } from '../../proxy-headers.js';
 import { createRealpathCache } from '../path-realpath-cache.js';
 import { DEFAULT_UPSTREAM_STALL_TIMEOUT_MS } from '../event-stream/upstream-reader.js';
+import { isPlainObject } from '../shared/guards.js';
+import { unwrapOpenCodeResponse } from './response-envelope.js';
 import { recordStartupPerformance } from './startup-performance.js';
 import { getWorktreeBootstrapStatus } from '../git/service.js';
 
@@ -315,11 +317,13 @@ export const registerOpenCodeProxy = (app, deps) => {
     mergeSpaceSessionList = null,
     spaceEventHub = null,
     // Claude Code sessions: the route subset they serve (mounted ahead of the
-    // readiness gate), the list merge that appends their records, and the hub
-    // whose Claude frames the global SSE stream carries. All absent means this
-    // server serves OpenCode alone, exactly as before.
+    // readiness gate), the list merge that appends their records, the active
+    // snapshot merge, and the hub whose Claude frames the global SSE stream
+    // carries. All absent means this server serves OpenCode alone, exactly as
+    // before.
     claudeRoutes = null,
     mergeClaudeSessionList = null,
+    getClaudeActiveSessions = null,
     claudeEventHub = null,
     isClaudeSession = null,
   } = deps;
@@ -1032,6 +1036,71 @@ export const registerOpenCodeProxy = (app, deps) => {
   app.get('/api/session', (req, res, next) => {
     return forwardSanitizedSessionListRequest(req, res, next, 'session.list');
   });
+
+  // The Claude backend's busy sessions join the active-session snapshot the UI
+  // escalates to when its stream goes quiet (`GET /api/session/active`). Only
+  // registered with the backend wired: an OpenCode-only server keeps the route
+  // on the generic proxy, exactly as before.
+  if (getClaudeActiveSessions instanceof Function) {
+    /**
+     * The live Claude sessions with a turn in flight, or `null` when the
+     * backend cannot answer or has none. A backend failure leaves the upstream
+     * snapshot alone rather than answering a partial one.
+     */
+    const readClaudeActiveSessions = async () => {
+      try {
+        const active = await getClaudeActiveSessions();
+        return isPlainObject(active) && Object.keys(active).length > 0 ? active : null;
+      } catch (error) {
+        console.warn('[proxy] Claude active sessions unavailable:', error?.message ?? error);
+        return null;
+      }
+    };
+
+    /**
+     * The upstream snapshot with the Claude busy sessions merged into its data
+     * map, keeping the envelope upstream used. `null` means the payload is not
+     * the documented `{ data: { [id]: status } }` map, so it goes back
+     * untouched.
+     */
+    const withClaudeActiveSessions = (payload, claudeActive) => {
+      if (!isPlainObject(payload) || !('data' in payload)) return null;
+      const data = unwrapOpenCodeResponse(payload);
+      if (!isPlainObject(data)) return null;
+      return { ...payload, data: { ...data, ...claudeActive } };
+    };
+
+    app.get('/api/session/active', async (req, res, next) => {
+      try {
+        const upstreamPath = await getRequestUpstreamPath(req);
+        const result = await fetchSessionListPayload(upstreamPath, { req });
+
+        res.status(result.upstream.status);
+        applyForwardProxyResponseHeaders(result.upstream.headers, res);
+        res.setHeader('content-type', result.contentType);
+
+        // The Claude map is read only for a snapshot the host really answered:
+        // a failed host read must never come back as the Claude map alone.
+        const claudeActive = result.upstream.ok && result.isJson && !result.parseError
+          ? await readClaudeActiveSessions()
+          : null;
+        const merged = claudeActive ? withClaudeActiveSessions(result.payload, claudeActive) : null;
+        if (!merged) {
+          res.end(result.bodyText);
+          return;
+        }
+        res.json(merged);
+      } catch (error) {
+        if (isAbortError(error)) return;
+        console.error('[proxy] OpenCode session.active proxy error:', error?.message ?? error);
+        if (!res.headersSent) {
+          res.status(503).json({ error: 'OpenCode service unavailable' });
+          return;
+        }
+        next(error);
+      }
+    });
+  }
 
   // One session: the same overlay, so a detail read agrees with the list it
   // came from. Everything else about the record is forwarded untouched.

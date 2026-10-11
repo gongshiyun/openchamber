@@ -81,6 +81,10 @@ const createFakeRunners = () => {
         interrupts: 0,
         disposed: 0,
         permissionResult: true,
+        busy: false,
+        isBusy() {
+          return runner.busy === true;
+        },
         async send(input) {
           runner.sends.push(input);
           // The real runner records the user message before the turn starts.
@@ -422,6 +426,28 @@ describe('claude code runtime', () => {
     });
   });
 
+  describe('active sessions', () => {
+    test('reports only sessions with a live busy runner', async () => {
+      const { runtime, runners } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      // A created session has no runner until its first prompt, and a live
+      // runner between turns is not busy.
+      await createSession(app, { id: 'ses_active_no_runner', location: { directory: 'C:\\work\\active' } }).expect(200);
+      expect(runtime.activeSessions()).toEqual({});
+
+      await createAndPrompt(app, { id: 'ses_active_idle', location: { directory: 'C:\\work\\active' } });
+      expect(runtime.activeSessions()).toEqual({});
+
+      runners.runners[0].busy = true;
+      expect(runtime.activeSessions()).toEqual({ ses_active_idle: { type: 'running' } });
+
+      runners.runners[0].busy = false;
+      expect(runtime.activeSessions()).toEqual({});
+    });
+  });
+
   describe('messages', () => {
     test('answers message.list with the SDK page envelope from the transcript', async () => {
       const { runtime, runners } = createRuntime();
@@ -676,6 +702,76 @@ describe('claude code runtime', () => {
       expect(runner.models).toEqual(['sonnet']);
       expect((await request(app).get('/api/session/ses_model_1').expect(200)).body.data.model)
         .toEqual({ providerID: 'claude-code', id: 'auto' });
+    });
+
+    test('derives the title from the first prompt text and emits session.renamed once', async () => {
+      const { runtime, hub, clock } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_title_1', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      clock.advance();
+      await request(app)
+        .post('/api/session/ses_title_1/prompt')
+        .send({ id: 'msg_title_1', text: '  Fix   the parser\nsecond line is ignored  ' })
+        .expect(200);
+
+      // The first non-empty line, trimmed and collapsed, names the session.
+      expect(hub.ofType('session.renamed')).toEqual([
+        expect.objectContaining({
+          created: CLOCK + 1000,
+          data: { sessionID: 'ses_title_1', title: 'Fix the parser' },
+          location: { directory: 'C:\\work\\title' },
+        }),
+      ]);
+      expect((await readIndex()).ses_title_1).toMatchObject({ title: 'Fix the parser', updatedAt: CLOCK + 1000 });
+
+      // A later prompt never renames a session that already has a title.
+      clock.advance();
+      await request(app)
+        .post('/api/session/ses_title_1/prompt')
+        .send({ id: 'msg_title_2', text: 'A completely different prompt' })
+        .expect(200);
+      expect(hub.ofType('session.renamed')).toHaveLength(1);
+      expect((await readIndex()).ses_title_1.title).toBe('Fix the parser');
+    });
+
+    test('truncates a long derived title and leaves preset and blank titles alone', async () => {
+      const { runtime, hub } = createRuntime();
+      await runtime.start();
+      const app = createApp(runtime);
+
+      await createSession(app, { id: 'ses_title_long', location: { directory: 'C:\\work\\title' } }).expect(200);
+      await request(app)
+        .post('/api/session/ses_title_long/prompt')
+        .send({ id: 'msg_long_1', text: 'x'.repeat(80) })
+        .expect(200);
+      expect(hub.ofType('session.renamed')).toEqual([
+        expect.objectContaining({
+          data: { sessionID: 'ses_title_long', title: `${'x'.repeat(60)}...` },
+        }),
+      ]);
+
+      // A title the create already set is never overwritten.
+      await createSession(app, {
+        id: 'ses_title_kept',
+        title: 'Kept title',
+        location: { directory: 'C:\\work\\title' },
+      }).expect(200);
+      await request(app)
+        .post('/api/session/ses_title_kept/prompt')
+        .send({ id: 'msg_kept_1', text: 'This must not rename' })
+        .expect(200);
+      expect((await readIndex()).ses_title_kept.title).toBe('Kept title');
+
+      // An all-blank prompt derives nothing: the title stays empty.
+      await createSession(app, { id: 'ses_title_blank', location: { directory: 'C:\\work\\title' } }).expect(200);
+      await request(app)
+        .post('/api/session/ses_title_blank/prompt')
+        .send({ id: 'msg_blank_1', text: '   \n\t  ' })
+        .expect(200);
+      expect((await readIndex()).ses_title_blank.title).toBe('');
+      expect(hub.ofType('session.renamed')).toHaveLength(1);
     });
   });
 

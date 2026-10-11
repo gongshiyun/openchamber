@@ -67,6 +67,10 @@ const createFakeRunners = () => {
     createRunner(session) {
       const runner = {
         sends: [],
+        busy: false,
+        isBusy() {
+          return runner.busy === true;
+        },
         async send(input) {
           runner.sends.push(input);
           // The real runner records the user message before the turn starts.
@@ -120,6 +124,7 @@ const createProxyApp = ({ upstreamPort, runtime, hub, getRuntimeState = null, de
     ensureOpenCodeApiPrefix: () => {},
     claudeRoutes: runtime.router,
     mergeClaudeSessionList: (options) => runtime.listSessionsForProxy(options),
+    getClaudeActiveSessions: () => runtime.activeSessions(),
     claudeEventHub: hub,
     isClaudeSession: (sessionID) => runtime.isClaudeSession(sessionID),
     ...deps,
@@ -288,6 +293,129 @@ describe('Claude Code server wiring', () => {
     // A cursored read is the upstream's alone: no re-append of what the client has.
     const paged = await (await fetch(`${base}/api/session?limit=50&cursor=p2`)).json();
     expect(paged.data.map((session) => session.id)).toEqual(['ses_host']);
+  });
+
+  it('merges a busy Claude session into GET /api/session/active beside the host snapshot', async () => {
+    const hub = createFakeHub();
+    const { runtime, runners } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    upstream.get('/api/session/active', (_req, res) => {
+      res.json({ data: { ses_host_active: { type: 'running' } } });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({ upstreamPort, runtime, hub }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    await postJson(`${base}/api/session`, {
+      id: 'ses_claude_active',
+      title: 'Active',
+      location: { directory: '/repo' },
+    }, { 'x-openchamber-backend': 'claude' }).then((res) => expect(res.status).toBe(200));
+    await postJson(`${base}/api/session/ses_claude_active/prompt`, { id: 'msg_active_1', text: 'Hello' })
+      .then((res) => expect(res.status).toBe(200));
+    runners.runners[0].busy = true;
+
+    const response = await fetch(`${base}/api/session/active`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: {
+        ses_host_active: { type: 'running' },
+        ses_claude_active: { type: 'running' },
+      },
+    });
+  });
+
+  it('leaves GET /api/session/active as the host answered it without a busy Claude session', async () => {
+    const hub = createFakeHub();
+    const { runtime, runners } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    upstream.get('/api/session/active', (_req, res) => {
+      res.json({ data: { ses_host_active: { type: 'running' } } });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({ upstreamPort, runtime, hub }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    // A live Claude session between turns is not busy: its runner is idle.
+    await postJson(`${base}/api/session`, {
+      id: 'ses_claude_idle',
+      title: 'Idle',
+      location: { directory: '/repo' },
+    }, { 'x-openchamber-backend': 'claude' }).then((res) => expect(res.status).toBe(200));
+    await postJson(`${base}/api/session/ses_claude_idle/prompt`, { id: 'msg_idle_1', text: 'Hello' })
+      .then((res) => expect(res.status).toBe(200));
+    runners.runners[0].busy = false;
+
+    const response = await fetch(`${base}/api/session/active`);
+    expect(response.status).toBe(200);
+    // Byte-for-byte the host's answer, not a rebuilt one.
+    expect(await response.text()).toBe('{"data":{"ses_host_active":{"type":"running"}}}');
+  });
+
+  it('keeps GET /api/session/active on the generic proxy when the Claude backend is absent', async () => {
+    const hub = createFakeHub();
+    const { runtime } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    let upstreamHits = 0;
+    upstream.get('/api/session/active', (_req, res) => {
+      upstreamHits += 1;
+      res.json({ data: { ses_host_active: { type: 'running' } } });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({
+      upstreamPort,
+      runtime,
+      hub,
+      deps: { getClaudeActiveSessions: null },
+    }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    const response = await fetch(`${base}/api/session/active`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: { ses_host_active: { type: 'running' } } });
+    expect(upstreamHits).toBe(1);
+  });
+
+  it('answers no partial active list when the host snapshot fails', async () => {
+    const hub = createFakeHub();
+    const { runtime, runners } = createRuntime({ dataDir: tempRoot, hub });
+    await runtime.start();
+
+    const upstream = express();
+    upstream.get('/api/session/active', (_req, res) => {
+      res.socket.destroy();
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+
+    proxyServer = await listen(createProxyApp({ upstreamPort, runtime, hub }));
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+
+    // A busy Claude session exists, but the host snapshot failed: the answer
+    // must not be the Claude map alone, or the UI would read it as complete.
+    await postJson(`${base}/api/session`, {
+      id: 'ses_claude_fail',
+      location: { directory: '/repo' },
+    }, { 'x-openchamber-backend': 'claude' }).then((res) => expect(res.status).toBe(200));
+    await postJson(`${base}/api/session/ses_claude_fail/prompt`, { id: 'msg_fail_1', text: 'Hello' })
+      .then((res) => expect(res.status).toBe(200));
+    runners.runners[0].busy = true;
+
+    const response = await fetch(`${base}/api/session/active`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'OpenCode service unavailable' });
   });
 
   it('multiplexes Claude frames into /api/event and keeps upstream frames byte-identical', async () => {

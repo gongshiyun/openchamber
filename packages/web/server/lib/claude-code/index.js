@@ -70,6 +70,24 @@ const withBackendMetadata = (metadata) => {
 
 const numberOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
 
+// A derived title is the first prompt's first line, collapsed and cut to this
+// many characters (plus an ellipsis), so a sidebar entry stays readable.
+const TITLE_MAX_LENGTH = 60;
+
+/**
+ * The title a session takes from its first prompt: the first non-empty line,
+ * trimmed and whitespace-collapsed, cut to `TITLE_MAX_LENGTH` characters with
+ * `...` when longer. An all-blank prompt derives nothing (`null`), so the
+ * title stays empty.
+ */
+const deriveTitleFromPrompt = (text) => {
+  if (!isString(text)) return null;
+  const firstLine = text.split('\n').map((line) => line.trim()).find((line) => line !== '');
+  if (!firstLine) return null;
+  const collapsed = firstLine.replace(/\s+/g, ' ');
+  return collapsed.length > TITLE_MAX_LENGTH ? `${collapsed.slice(0, TITLE_MAX_LENGTH)}...` : collapsed;
+};
+
 /**
  * Build the Claude Code runtime for one instance data directory.
  *
@@ -92,6 +110,7 @@ const numberOr = (value, fallback) => (Number.isFinite(value) ? value : fallback
  *   router: object,
  *   isClaudeSession: (sessionID: string) => boolean,
  *   listSessionsForProxy: (query: { directory?: string, limit?: number, search?: string }) => object[],
+ *   activeSessions: () => { [sessionID: string]: { type: 'running' } },
  *   getSessionMetadata: (sessionID: string) => object | null,
  *   mergeSessionMetadata: (sessionID: string, patch: object, options?: { directory?: string }) => Promise<object>,
  *   start: () => Promise<void>,
@@ -528,6 +547,19 @@ export function createClaudeCodeRuntime({
   };
 
   /**
+   * The live sessions with a turn in flight, in the shape `GET /api/session/active`
+   * serves: `{ [sessionID]: { type: 'running' } }`. Only runners that already
+   * exist are asked — this read never creates one.
+   */
+  const activeSessions = () => {
+    const active = {};
+    for (const [sessionID, entry] of runners) {
+      if (entry.runner?.isBusy?.() === true) active[sessionID] = { type: 'running' };
+    }
+    return active;
+  };
+
+  /**
    * Records one synthetic context message, publishes it as the wire event the
    * UI projects into a context block, and keeps its text for the next prompt.
    * OpenCode delivers synthetic messages as context messages of their own
@@ -570,6 +602,14 @@ export function createClaudeCodeRuntime({
   const sendPrompt = async (sessionID, input = {}) => {
     const record = requireRecord(sessionID);
     const runner = await runnerEntryFor(record).promise;
+    // The first prompt with text names the session, like OpenCode's own
+    // auto-titling; a title already set (by that prompt, a rename, or the
+    // create) is never overwritten. The rename is synchronous up to its
+    // persistence, so two concurrent first prompts cannot both name it.
+    if (record.title.trim() === '') {
+      const title = deriveTitleFromPrompt(input.text);
+      if (title !== null) await renameSession(record.id, title);
+    }
     const messageID = isString(input.id) && input.id !== '' ? input.id : createMessageId();
     // v1 carries the text, the client-minted message id, and the synthetic
     // context admitted since the last prompt. Files, agent mentions, skills,
@@ -640,6 +680,7 @@ export function createClaudeCodeRuntime({
     router: createClaudeRoutes({ registry }),
     isClaudeSession,
     listSessionsForProxy,
+    activeSessions,
     getSessionMetadata,
     mergeSessionMetadata,
     start,

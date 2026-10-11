@@ -26,11 +26,13 @@ export const createServerUtilsRuntime = (dependencies) => {
     getMergeSpaceSessionList = null,
     getSpaceEventHub = null,
     getStoredSessionMetadata = null,
-    // Claude Code sessions: the route subset they serve, the list merge, and
-    // the hub whose Claude frames the global SSE stream carries. Absent means
-    // this server serves OpenCode alone, exactly as before.
+    // Claude Code sessions: the route subset they serve, the list merge, the
+    // active-session merge, and the hub whose Claude frames the global SSE
+    // stream carries. Absent means this server serves OpenCode alone, exactly
+    // as before.
     claudeRoutes = null,
     mergeClaudeSessionList = null,
+    getClaudeActiveSessions = null,
     claudeEventHub = null,
     isClaudeSession = null,
   } = dependencies;
@@ -210,6 +212,7 @@ export const createServerUtilsRuntime = (dependencies) => {
       // like the spaces ones; all null leaves the OpenCode proxy untouched.
       claudeRoutes,
       mergeClaudeSessionList,
+      getClaudeActiveSessions,
       claudeEventHub,
       isClaudeSession,
     });
