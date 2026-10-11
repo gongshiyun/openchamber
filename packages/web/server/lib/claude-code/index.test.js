@@ -1199,11 +1199,38 @@ describe('claude code runtime', () => {
       expect(renamed).toHaveLength(2);
       expect(renamed[1].data).toEqual({ sessionID: 'ses_gentitle_1', title: 'Model-written title' });
 
-      // The one-shot carries the instructions and the user's text, on `haiku`.
+      // The one-shot carries the instructions and the user's text, on `haiku`,
+      // with the resolved CLI so a packaged app does not fall back to the SDK's
+      // bundled binary inside app.asar.
       expect(oneShot.calls).toHaveLength(1);
       expect(oneShot.calls[0].prompt).toBe(
         'Reply with a title only: max 6 words, no quotes, no punctuation at the end, same language as the text. Text: Fix the parser',
       );
+      expect(oneShot.calls[0].options).toEqual({
+        cwd: 'C:/work/title',
+        maxTurns: 1,
+        tools: [],
+        model: 'haiku',
+        pathToClaudeCodeExecutable: 'C:\\fake\\claude.exe',
+      });
+    });
+
+    test('omits the CLI path when none resolves', async () => {
+      const oneShot = createManualOneShot({ result: 'Model-written title' });
+      const { runtime } = createRuntime({
+        deps: { spawnQueryImpl: oneShot.spawn, resolveCliPath: async () => null },
+      });
+      await runtime.start();
+      const app = createApp(runtime);
+      await createSession(app, { id: 'ses_gentitle_7', location: { directory: 'C:\\work\\title' } }).expect(200);
+
+      await request(app)
+        .post('/api/session/ses_gentitle_7/prompt')
+        .send({ id: 'msg_gt_7', text: 'Fix the parser' })
+        .expect(200);
+      oneShot.release();
+      await oneShot.done;
+
       expect(oneShot.calls[0].options).toEqual({
         cwd: 'C:/work/title',
         maxTurns: 1,
@@ -1576,7 +1603,7 @@ describe('claude code runtime', () => {
 
       expect(runtime.cliStatus()).toEqual({ path: 'C:\\fake\\claude.exe', ok: false, error: 'exit code 1' });
       expect(warn).toHaveBeenCalledWith(
-        "[claude-code] claude CLI C:\\fake\\claude.exe probe failed: exit code 1; the SDK's bundled executable will be used",
+        "[claude-code] claude CLI C:\\fake\\claude.exe probe failed: exit code 1; sessions cannot start until it runs",
       );
     });
 
@@ -1598,7 +1625,7 @@ describe('claude code runtime', () => {
 
       expect(probed).toEqual([]);
       expect(runtime.cliStatus()).toEqual({ path: null, ok: false });
-      expect(info).toHaveBeenCalledWith("[claude-code] no claude CLI found; the SDK's bundled executable will be used");
+      expect(info).toHaveBeenCalledWith("[claude-code] no claude CLI found; the Agent SDK will resolve its own bundled executable");
     });
 
     test('a failing probe never rejects start()', async () => {
@@ -1614,9 +1641,7 @@ describe('claude code runtime', () => {
       await runtime.start();
 
       await waitFor(() => warn.mock.calls.length > 0);
-      expect(warn).toHaveBeenCalledWith(
-        "[claude-code] claude CLI probe failed: probe exploded; the SDK's bundled executable will be used",
-      );
+      expect(warn).toHaveBeenCalledWith("[claude-code] claude CLI probe failed: probe exploded");
     });
 
     test('does not probe when the index cannot be loaded', async () => {

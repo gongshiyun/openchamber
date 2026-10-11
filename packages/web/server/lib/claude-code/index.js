@@ -705,9 +705,15 @@ export function createClaudeCodeRuntime({
    */
   const generateSessionTitle = async (record, derivedTitle, text) => {
     try {
+      const cliPath = await resolveCli();
+      const options = { cwd: record.directory, maxTurns: 1, tools: [], model: 'haiku' };
+      // The resolved CLI travels with every one-shot, like `generate`: the
+      // SDK's own bundled-binary resolution points inside `app.asar` in a
+      // packaged app, where the binary cannot launch (see cli-resolution.js).
+      if (cliPath) options.pathToClaudeCodeExecutable = cliPath;
       const result = await runOneShotQuery({
         prompt: buildTitlePrompt(text),
-        options: { cwd: record.directory, maxTurns: 1, tools: [], model: 'haiku' },
+        options,
         timeoutMs: TITLE_GENERATION_TIMEOUT_MS,
       });
       const title = generatedTitleFromText(result);
@@ -1015,16 +1021,17 @@ export function createClaudeCodeRuntime({
   /**
    * Resolves the CLI the backend will hand to the SDK and runs it once
    * (`--version`) to report whether it actually works. The result is recorded
-   * for `cliStatus()` and logged once; a failure means the SDK's bundled
-   * executable will be used, which is what the runner already does when
-   * resolution returns null. The probe itself never throws and kills a child
-   * that outlives its own timeout, so this background work is bounded.
+   * for `cliStatus()` and logged once; resolution falls back to the Agent
+   * SDK's own bundled binary, so a null here means the SDK will attempt its
+   * own resolution (which a packaged app's `app.asar` can defeat). The probe
+   * itself never throws and kills a child that outlives its own timeout, so
+   * this background work is bounded.
    */
   const probeCliAvailability = async () => {
     const cliPath = await resolveCli();
     if (!cliPath) {
       cliProbeStatus = { path: null, ok: false };
-      console.info("[claude-code] no claude CLI found; the SDK's bundled executable will be used");
+      console.info("[claude-code] no claude CLI found; the Agent SDK will resolve its own bundled executable");
       return;
     }
     const result = await probeCliImpl({ launchSpec: buildClaudeLaunchSpec(cliPath) });
@@ -1035,7 +1042,7 @@ export function createClaudeCodeRuntime({
       console.info(`[claude-code] claude CLI ${cliPath} (${result.version})`);
       return;
     }
-    console.warn(`[claude-code] claude CLI ${cliPath} probe failed: ${result.error}; the SDK's bundled executable will be used`);
+    console.warn(`[claude-code] claude CLI ${cliPath} probe failed: ${result.error}; sessions cannot start until it runs`);
   };
 
   /**
@@ -1048,7 +1055,7 @@ export function createClaudeCodeRuntime({
   const start = async () => {
     await loadIndex();
     void probeCliAvailability().catch((error) => {
-      console.warn(`[claude-code] claude CLI probe failed: ${error?.message ?? error}; the SDK's bundled executable will be used`);
+      console.warn(`[claude-code] claude CLI probe failed: ${error?.message ?? error}`);
     });
   };
 

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 // Windows shims are batch scripts: spawn(shell: false) cannot execute them
@@ -54,16 +55,67 @@ const createPathSearch = (env, exists) => (name) => {
   return null;
 };
 
+const requireFromHere = createRequire(import.meta.url);
+
+const bundledExecutableName = (platform) => (platform === 'win32' ? 'claude.exe' : 'claude');
+
+// A musl Linux host needs the musl variant of the bundled binary, and only the
+// Agent SDK's own resolution can tell the variants apart; this helper cannot,
+// so on musl it declines and lets the SDK resolve.
+const isMuslLinux = (platform, exists) => platform === 'linux'
+  && (exists('/etc/alpine-release') || exists('/lib/ld-musl-x86_64.so.1') || exists('/lib/ld-musl-aarch64.so.1'));
+
+/**
+ * Resolve the native CLI the Agent SDK bundles as an optional dependency
+ * (`@anthropic-ai/claude-agent-sdk-<platform>-<arch>`), or null when this
+ * platform has none installed.
+ *
+ * A packaged Electron app keeps node_modules inside `app.asar`, where a child
+ * process cannot be launched — the SDK's own resolution finds the path there
+ * and reports the binary as "exists but failed to launch". When the resolved
+ * path sits inside an archive, the unpacked copy beside it (`app.asar.unpacked`,
+ * where electron-builder places native binaries) is returned instead, so the
+ * bundled fallback actually runs in a packaged app.
+ *
+ * @param {{
+ *   platform?: string,
+ *   arch?: string,
+ *   resolveImpl?: (request: string) => string,
+ *   exists?: (path: string) => boolean,
+ * }} [options]
+ * @returns {string | null} The bundled CLI path, or null when there is none.
+ */
+export function resolveBundledClaudeCliPath({
+  platform = process.platform,
+  arch = process.arch,
+  resolveImpl = (request) => requireFromHere.resolve(request),
+  exists = fs.existsSync,
+} = {}) {
+  if (isMuslLinux(platform, exists)) return null;
+  let packageJson;
+  try {
+    packageJson = resolveImpl(`@anthropic-ai/claude-agent-sdk-${platform}-${arch}/package.json`);
+  } catch {
+    return null;
+  }
+  const executable = path.join(path.dirname(packageJson), bundledExecutableName(platform));
+  const unpacked = executable.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  if (unpacked !== executable && exists(unpacked)) return unpacked;
+  return exists(executable) ? executable : null;
+}
+
 /**
  * Resolve the absolute path of the user's `claude` CLI, or null when none is
  * found.
  *
  * Order: the `settings.claudeBinary` override, then `CLAUDE_BINARY`, then a
- * PATH search, then the known install locations. Every candidate must exist;
- * a stale override falls through to the next source instead of being returned.
- * All IO is injected so tests never touch the real filesystem: `exists(path)`
- * answers whether a candidate is real, and `searchPath(name)` probes PATH and
- * returns an absolute path or null.
+ * PATH search, then the known install locations, then the Agent SDK's own
+ * bundled binary (its unpacked copy in a packaged app — see
+ * `resolveBundledClaudeCliPath`). Every candidate must exist; a stale override
+ * falls through to the next source instead of being returned. All IO is
+ * injected so tests never touch the real filesystem: `exists(path)` answers
+ * whether a candidate is real, and `searchPath(name)` probes PATH and returns
+ * an absolute path or null.
  *
  * @param {{
  *   env?: NodeJS.ProcessEnv,
@@ -71,6 +123,7 @@ const createPathSearch = (env, exists) => (name) => {
  *   platform?: string,
  *   exists?: (path: string) => boolean,
  *   searchPath?: (name: string) => string | null,
+ *   bundledCliPath?: () => string | null,
  * }} [options]
  * @returns {string | null} The CLI path, or null when nothing exists.
  */
@@ -80,6 +133,7 @@ export function resolveClaudeCliPath({
   platform = process.platform,
   exists = fs.existsSync,
   searchPath,
+  bundledCliPath,
 } = {}) {
   const explicit = [settings?.claudeBinary, env?.CLAUDE_BINARY].map(trimPath).filter(Boolean);
   for (const candidate of explicit) {
@@ -96,7 +150,9 @@ export function resolveClaudeCliPath({
     if (exists(candidate)) return candidate;
   }
 
-  return null;
+  // The SDK's bundled binary is the last resort: a real install always wins.
+  const bundled = bundledCliPath ? bundledCliPath() : resolveBundledClaudeCliPath({ platform, exists });
+  return bundled ?? null;
 }
 
 /**

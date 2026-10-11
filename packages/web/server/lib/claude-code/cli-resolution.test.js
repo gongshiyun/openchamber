@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildClaudeLaunchSpec, probeClaudeCli, resolveClaudeCliPath } from './cli-resolution.js';
+import { buildClaudeLaunchSpec, probeClaudeCli, resolveBundledClaudeCliPath, resolveClaudeCliPath } from './cli-resolution.js';
 
 // searchPath is the resolver's only PATH IO, so a recording fake both answers
 // the lookup and proves which candidate names were asked for, and in which
@@ -380,5 +380,117 @@ describe('probeClaudeCli', () => {
       ok: false,
       error: 'EINVAL: invalid spawn options',
     });
+  });
+});
+
+describe('resolveBundledClaudeCliPath', () => {
+  const archiveDir = 'C:\\app\\resources\\app.asar\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64';
+  const unpackedDir = 'C:\\app\\resources\\app.asar.unpacked\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64';
+
+  it('returns the unpacked copy when the resolved path sits inside app.asar', () => {
+    const resolved = path.join(archiveDir, 'package.json');
+    const executable = path.join(unpackedDir, 'claude.exe');
+
+    const found = resolveBundledClaudeCliPath({
+      platform: 'win32',
+      arch: 'x64',
+      resolveImpl: (request) => {
+        expect(request).toBe('@anthropic-ai/claude-agent-sdk-win32-x64/package.json');
+        return resolved;
+      },
+      exists: (candidate) => candidate === executable,
+    });
+
+    expect(found).toBe(executable);
+  });
+
+  it('keeps the resolved path when it is a real file outside an archive', () => {
+    const dir = 'C:\\dev\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64';
+    const executable = path.join(dir, 'claude.exe');
+
+    expect(resolveBundledClaudeCliPath({
+      platform: 'win32',
+      resolveImpl: () => path.join(dir, 'package.json'),
+      exists: (candidate) => candidate === executable,
+    })).toBe(executable);
+  });
+
+  it('answers null when the platform package is not installed', () => {
+    expect(resolveBundledClaudeCliPath({
+      resolveImpl: () => {
+        throw new Error('MODULE_NOT_FOUND');
+      },
+    })).toBeNull();
+  });
+
+  it('answers null when neither the archive entry nor the unpacked copy exists', () => {
+    expect(resolveBundledClaudeCliPath({
+      platform: 'win32',
+      resolveImpl: () => path.join(archiveDir, 'package.json'),
+      exists: () => false,
+    })).toBeNull();
+  });
+
+  it('declines on a musl Linux host so the SDK picks the musl variant itself', () => {
+    expect(resolveBundledClaudeCliPath({
+      platform: 'linux',
+      arch: 'x64',
+      resolveImpl: () => {
+        throw new Error('must not resolve');
+      },
+      exists: (candidate) => candidate === '/etc/alpine-release',
+    })).toBeNull();
+  });
+
+  it('uses the extensionless name off Windows', () => {
+    const dir = path.join('/opt/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64');
+    const executable = path.join(dir, 'claude');
+
+    expect(resolveBundledClaudeCliPath({
+      platform: 'linux',
+      arch: 'x64',
+      resolveImpl: () => path.join(dir, 'package.json'),
+      exists: (candidate) => candidate === executable,
+    })).toBe(executable);
+  });
+});
+
+describe('resolveClaudeCliPath with the bundled fallback', () => {
+  it('prefers a real install over the bundled binary', () => {
+    const { searchPath } = recordingSearchPath({ 'claude.exe': 'C:\\path\\claude.exe' });
+
+    const resolved = resolveClaudeCliPath({
+      env: { PATH: 'C:\\path' },
+      platform: 'win32',
+      exists: (candidate) => candidate === 'C:\\path\\claude.exe',
+      searchPath,
+      bundledCliPath: () => 'C:\\bundled\\claude.exe',
+    });
+
+    expect(resolved).toBe('C:\\path\\claude.exe');
+  });
+
+  it('falls back to the bundled binary when nothing else exists', () => {
+    const resolved = resolveClaudeCliPath({
+      env: {},
+      platform: 'win32',
+      exists: () => false,
+      searchPath: missSearchPath,
+      bundledCliPath: () => 'C:\\bundled\\claude.exe',
+    });
+
+    expect(resolved).toBe('C:\\bundled\\claude.exe');
+  });
+
+  it('answers null when neither an install nor a bundled binary exists', () => {
+    const resolved = resolveClaudeCliPath({
+      env: {},
+      platform: 'win32',
+      exists: () => false,
+      searchPath: missSearchPath,
+      bundledCliPath: () => null,
+    });
+
+    expect(resolved).toBeNull();
   });
 });
