@@ -31,9 +31,13 @@ let tempRoot;
 
 beforeEach(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-code-runtime-'));
+  // `start()` probes the CLI and logs one line per outcome; the tests that
+  // assert that line install their own spy, and every other test stays quiet.
+  vi.spyOn(console, 'info').mockImplementation(() => {});
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -192,6 +196,9 @@ const createRuntime = ({ runners = createFakeRunners(), hub = createHub(), deps 
     getSettings: () => ({}),
     createRunnerFactoryImpl: () => runners.factory,
     resolveCliPath: async () => 'C:\\fake\\claude.exe',
+    // The startup probe is injected like every other seam: the real one would
+    // spawn a process, and cli-resolution.test.js owns its behavior.
+    probeCliImpl: async () => ({ ok: true, version: 'test-cli 1.0.0' }),
     // Title generation must never reach the real SDK in tests; the default
     // fake answers an empty result, which applies nothing.
     spawnQueryImpl: createSilentSpawnQuery(),
@@ -1526,6 +1533,108 @@ describe('claude code runtime', () => {
         .send({ id: 'msg_files_2', text: 'No files', files: 'nonsense' })
         .expect(200);
       expect(runners.runners[0].sends[1]).toEqual({ text: 'No files', messageID: 'msg_files_2' });
+    });
+  });
+
+  describe('CLI availability probe', () => {
+    test('probes the resolved CLI at start and reports it through cliStatus', async () => {
+      const probed = [];
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const { runtime } = createRuntime({
+        deps: {
+          probeCliImpl: async ({ launchSpec }) => {
+            probed.push(launchSpec);
+            return { ok: true, version: '2.1.0 (Claude Code)' };
+          },
+        },
+      });
+
+      expect(runtime.cliStatus()).toEqual({ path: null, ok: false });
+
+      await runtime.start();
+      await waitFor(() => runtime.cliStatus().ok === true);
+
+      // The runtime builds the spawn spec for the resolved path and hands it
+      // to the probe; `--version` is the probe's own concern.
+      expect(probed).toEqual([{ command: 'C:\\fake\\claude.exe', args: [] }]);
+      expect(runtime.cliStatus()).toEqual({
+        path: 'C:\\fake\\claude.exe',
+        ok: true,
+        version: '2.1.0 (Claude Code)',
+      });
+      expect(info).toHaveBeenCalledWith('[claude-code] claude CLI C:\\fake\\claude.exe (2.1.0 (Claude Code))');
+    });
+
+    test('records the failure and logs the fallback when the probe fails', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { runtime } = createRuntime({
+        deps: { probeCliImpl: async () => ({ ok: false, error: 'exit code 1' }) },
+      });
+
+      await runtime.start();
+      await waitFor(() => runtime.cliStatus().error === 'exit code 1');
+
+      expect(runtime.cliStatus()).toEqual({ path: 'C:\\fake\\claude.exe', ok: false, error: 'exit code 1' });
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-code] claude CLI C:\\fake\\claude.exe probe failed: exit code 1; the SDK's bundled executable will be used",
+      );
+    });
+
+    test('reports the bundled executable when no CLI path resolves', async () => {
+      const probed = [];
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const { runtime } = createRuntime({
+        deps: {
+          resolveCliPath: async () => null,
+          probeCliImpl: async (params) => {
+            probed.push(params);
+            return { ok: true, version: 'unused' };
+          },
+        },
+      });
+
+      await runtime.start();
+      await waitFor(() => info.mock.calls.length > 0);
+
+      expect(probed).toEqual([]);
+      expect(runtime.cliStatus()).toEqual({ path: null, ok: false });
+      expect(info).toHaveBeenCalledWith("[claude-code] no claude CLI found; the SDK's bundled executable will be used");
+    });
+
+    test('a failing probe never rejects start()', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { runtime } = createRuntime({
+        deps: {
+          probeCliImpl: async () => {
+            throw new Error('probe exploded');
+          },
+        },
+      });
+
+      await runtime.start();
+
+      await waitFor(() => warn.mock.calls.length > 0);
+      expect(warn).toHaveBeenCalledWith(
+        "[claude-code] claude CLI probe failed: probe exploded; the SDK's bundled executable will be used",
+      );
+    });
+
+    test('does not probe when the index cannot be loaded', async () => {
+      await fs.mkdir(path.dirname(indexPath()), { recursive: true });
+      await fs.writeFile(indexPath(), '{ not json', 'utf8');
+      const probed = [];
+      const { runtime } = createRuntime({
+        deps: {
+          probeCliImpl: async (params) => {
+            probed.push(params);
+            return { ok: true, version: 'unused' };
+          },
+        },
+      });
+
+      await expect(runtime.start()).rejects.toThrow(/unreadable/);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(probed).toEqual([]);
     });
   });
 

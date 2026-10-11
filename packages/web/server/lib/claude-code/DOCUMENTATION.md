@@ -4,16 +4,16 @@
 
 The Claude Code backend is OpenChamber's second agent backend beside OpenCode. This module owns one Claude session end to end: the session registry, the per-session transcripts, the live Agent SDK runners, the OpenCode v2 HTTP subset a Claude session serves, and the wire events of all of it. OpenCode stays the default backend; this module answers only for sessions its registry owns, and every other `/api` request passes through to the OpenCode proxy unchanged (`../opencode/DOCUMENTATION.md`).
 
-The trust boundary is the user's own `claude` CLI. A Claude session runs that CLI through `@anthropic-ai/claude-agent-sdk`, with the user's own authentication and configuration; OpenChamber reads, stores, and forwards no Claude credentials. The module's only durable state is the session index, the transcripts, and the Claude session uuid each session resumes on. Where the CLI comes from — a configured binary, a PATH install, or the SDK's bundled executable — is resolved per session (`cli-resolution.js`); the credential exchange stays between the CLI and Anthropic.
+The trust boundary is the user's own `claude` CLI. A Claude session runs that CLI through `@anthropic-ai/claude-agent-sdk`, with the user's own authentication and configuration; OpenChamber reads, stores, and forwards no Claude credentials. The module's only durable state is the session index, the transcripts, and the Claude session uuid each session resumes on. Where the CLI comes from — a configured binary, a PATH install, or the SDK's bundled executable — is resolved per session and probed once at startup (`cli-resolution.js`); the credential exchange stays between the CLI and Anthropic.
 
 ## Entrypoints and structure
 
-- `packages/web/server/lib/claude-code/index.js`: the composition root. `createClaudeCodeRuntime({ dataDir, eventHub, getSettings, ... })` builds the registry, transcripts, lazy runners, router, and the adapters the server wires into the proxy and the OpenChamber session routes. `start()` loads the index; `stop()` disposes every live runner and drains index writes.
+- `packages/web/server/lib/claude-code/index.js`: the composition root. `createClaudeCodeRuntime({ dataDir, eventHub, getSettings, ... })` builds the registry, transcripts, lazy runners, router, and the adapters the server wires into the proxy and the OpenChamber session routes. `start()` loads the index and probes the resolved CLI in the background (CLI resolution); `stop()` disposes every live runner and drains index writes.
 - `packages/web/server/lib/claude-code/routes.js`: the OpenCode v2 route subset, mounted by the proxy at `/api` ahead of the OpenCode readiness gate.
 - `packages/web/server/lib/claude-code/runner.js`: one live Agent SDK `query()` per session — streaming input, turn lifecycle, permissions, prompt attachments, interrupt, idle reaping, dispose. The SDK spawns one `claude` process per query, so a live session is one child process of this server.
 - `packages/web/server/lib/claude-code/translator.js`: a pure state machine mapping SDK messages to OpenCode v2 wire events. No IO, no SDK import; an unknown or malformed message maps to no events.
 - `packages/web/server/lib/claude-code/transcript.js`: the wire message records and their append-only JSONL persistence; the source of `message.list`.
-- `packages/web/server/lib/claude-code/cli-resolution.js`: resolves the user's `claude` CLI and builds a spawn spec for a caller that spawns it itself.
+- `packages/web/server/lib/claude-code/cli-resolution.js`: resolves the user's `claude` CLI, builds a spawn spec for a caller that spawns it itself, and probes the resolved CLI once at startup.
 - `packages/web/server/lib/claude-code/ids.js`: `ses_`/`msg_` id minting in OpenCode's own time-sortable format. A JS mirror of `packages/ui/src/lib/opencode/ids.ts` (the plain-JS server cannot import from `packages/ui`), so the two must stay compatible: the UI special-cases the `ses_` prefix, and OpenCode sorts ids by the 6-byte time/counter prefix.
 
 ## HTTP surface
@@ -143,9 +143,11 @@ Boot: `start()` rejects on an unreadable or malformed index, because starting em
 2. A PATH search, best candidate first: on Windows `claude.exe`, `claude.cmd`, then a bare `claude`; elsewhere `claude`.
 3. Known install locations a PATH-less process (packaged Electron, a service) still has to find: `~/.claude/local/claude`, `%APPDATA%/npm/claude.cmd` on Windows, and `~/.local/bin/claude`.
 
-All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so tests never touch the real filesystem.
+All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`; the probe's `spawnImpl`), so tests never touch the real filesystem.
 
-`buildClaudeLaunchSpec` builds the spawn spec for a caller that spawns the CLI itself: on Windows a `.cmd`/`.bat` shim goes through the command interpreter (`%ComSpec%`, args `/d /s /c call <path>`), `.exe` and extensionless executables run as-is, and a bare `.js` entry is refused because it needs a Node interpreter the module does not own. The current runner does not use it: it hands the resolved path to the SDK as `pathToClaudeCodeExecutable`, and the SDK owns the spawn. When resolution returns null, that option is omitted and the SDK runs its bundled executable.
+`buildClaudeLaunchSpec` builds the spawn spec for a caller that spawns the CLI itself: on Windows a `.cmd`/`.bat` shim goes through the command interpreter (`%ComSpec%`, args `/d /s /c call <path>`), `.exe` and extensionless executables run as-is, and a bare `.js` entry is refused because it needs a Node interpreter the module does not own. The runner does not use it: it hands the resolved path to the SDK as `pathToClaudeCodeExecutable`, and the SDK owns the spawn. When resolution returns null, that option is omitted and the SDK runs its bundled executable.
+
+`probeClaudeCli({ launchSpec })` runs the spec once with `--version` appended to its args and reports whether the CLI actually works. It never throws: a null spec (the `.js` refusal), a spawn failure, a non-zero exit, and a child that outlives the five-second timeout (it is killed) all resolve as `{ ok: false, error }`; a zero exit resolves `{ ok: true, version }`, the first non-empty trimmed line of the collected stdout/stderr, or `unknown` when the CLI printed nothing. `start()` resolves the CLI after the index loads and fires the probe in the background — it is diagnostics only, so boot never waits for it — and logs one line: `claude CLI <path> (<version>)` on success, or that the SDK's bundled executable will be used when the probe fails, the lookup fails, or no path resolves. The last result is readable as `runtime.cliStatus()` (`{ path, ok, version?, error? }`, `{ path: null, ok: false }` before a probe or when nothing was found) for diagnostics.
 
 ## Known v1 limitations
 
@@ -175,4 +177,4 @@ All IO is injectable (`env`, `settings`, `platform`, `exists`, `searchPath`), so
 ## Testing
 
 - `bunx vitest run server/lib/claude-code` from `packages/web` runs the whole module: the `bun:test` suites through the repo's shim, the vitest suites natively.
-- Individual suites: `bun test packages/web/server/lib/claude-code/index.test.js` (registry, persistence, routes through the real `@opencode/client`), `routes.test.js`, `runner.test.js`, `translator.test.js`, `transcript.test.js`, `wiring.test.js` (the proxy end to end against a fake OpenCode), and the contract tests; `bunx vitest run server/lib/claude-code/cli-resolution.test.js` for the CLI resolution.
+- Individual suites: `bun test packages/web/server/lib/claude-code/index.test.js` (registry, persistence, routes through the real `@opencode/client`), `routes.test.js`, `runner.test.js`, `translator.test.js`, `transcript.test.js`, `wiring.test.js` (the proxy end to end against a fake OpenCode), and the contract tests; `bunx vitest run server/lib/claude-code/cli-resolution.test.js` for the CLI resolution and the probe.

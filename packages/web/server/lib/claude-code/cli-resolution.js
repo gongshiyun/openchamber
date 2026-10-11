@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -130,4 +131,92 @@ export function buildClaudeLaunchSpec(cliPath, { platform = process.platform, co
   }
 
   return { command, args: [] };
+}
+
+// A CLI that answers `--version` within five seconds is available; a longer
+// wait (a hang, an interactive prompt) is not something a startup probe should
+// hold onto, so the child is killed at this deadline.
+const PROBE_TIMEOUT_MS = 5000;
+// A zero-exit probe that printed nothing still answers "it runs"; only the
+// version is unknown.
+const UNKNOWN_VERSION = 'unknown';
+
+/** The first non-empty trimmed line of `text`, or null when there is none. */
+const firstNonEmptyLine = (text) => {
+  for (const line of String(text).split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+};
+
+/**
+ * Run the resolved CLI once (`--version` appended to the spec's args) to
+ * report whether it actually runs.
+ *
+ * The spawn is injected, and the call never throws or rejects: a null launch
+ * spec (the `.js` refusal), a spawn that fails or throws, a non-zero exit, and
+ * a child that outlives `timeoutMs` (it is killed, then reported) all resolve
+ * as `{ ok: false, error }`. A zero exit resolves `{ ok: true, version }`,
+ * where the version is the first non-empty trimmed line of the collected
+ * stdout/stderr — `'unknown'` when the CLI printed nothing.
+ *
+ * @param {{
+ *   launchSpec: { command: string, args: string[] } | null,
+ *   spawnImpl?: (command: string, args: string[], options: { windowsHide: boolean, stdio: string[] }) => import('node:child_process').ChildProcess,
+ *   timeoutMs?: number,
+ * }} [options]
+ * @returns {Promise<{ ok: true, version: string } | { ok: false, error: string }>}
+ */
+export function probeClaudeCli({ launchSpec, spawnImpl = spawn, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+  if (!launchSpec || !trimPath(launchSpec.command)) {
+    return Promise.resolve({ ok: false, error: 'unsupported executable' });
+  }
+
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnImpl(launchSpec.command, [...launchSpec.args, '--version'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      resolve({ ok: false, error: `${error?.message ?? error}` });
+      return;
+    }
+
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // The process may already be gone.
+      }
+      settle({ ok: false, error: 'timed out' });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on('data', (chunk) => stdout.push(String(chunk)));
+    child.stderr.on('data', (chunk) => stderr.push(String(chunk)));
+    // A spawn that fails (a missing or unreadable executable) reports through
+    // 'error' and never closes; without this the probe would sit until its
+    // timeout for a child that never ran.
+    child.on('error', (error) => settle({ ok: false, error: `${error?.message ?? error}` }));
+    child.on('close', (code) => {
+      if (code === 0) {
+        settle({ ok: true, version: firstNonEmptyLine([...stdout, ...stderr].join('')) ?? UNKNOWN_VERSION });
+        return;
+      }
+      const reported = String(stderr.join('')).trim();
+      settle({ ok: false, error: reported || `exit code ${code}` });
+    });
+  });
 }

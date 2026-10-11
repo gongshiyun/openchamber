@@ -42,7 +42,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { mergeMetadataPatch } from '../openchamber-sessions/session-metadata-store.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 import { isPlainObject, isString } from '../shared/guards.js';
-import { resolveClaudeCliPath } from './cli-resolution.js';
+import { buildClaudeLaunchSpec, probeClaudeCli, resolveClaudeCliPath } from './cli-resolution.js';
 import { createMessageId, createSessionId } from './ids.js';
 import { createClaudeRoutes } from './routes.js';
 import {
@@ -234,6 +234,10 @@ const generatedTitleFromText = (text) => {
  *   resolveCliPath?: () => string | null | Promise<string | null>, Test seam
  *     for the CLI lookup. Defaults to `resolveClaudeCliPath` against
  *     `getSettings()`.
+ *   probeCliImpl?: (params: { launchSpec: { command: string, args: string[] } | null }) => Promise<{ ok: boolean, version?: string, error?: string }>,
+ *     Test seam: the startup CLI availability probe. Defaults to
+ *     `probeClaudeCli`, which spawns the real CLI once. See `start` for when
+ *     it runs and `cliStatus` for its result.
  *   now?: () => number,
  * }} deps
  * @returns {{
@@ -245,6 +249,7 @@ const generatedTitleFromText = (text) => {
  *   mergeSessionMetadata: (sessionID: string, patch: object, options?: { directory?: string }) => Promise<object>,
  *   start: () => Promise<void>,
  *   stop: () => Promise<void>,
+ *   cliStatus: () => { path: string | null, ok: boolean, version?: string, error?: string },
  * }}
  */
 export function createClaudeCodeRuntime({
@@ -254,6 +259,7 @@ export function createClaudeCodeRuntime({
   createRunnerFactoryImpl = createRunnerFactory,
   spawnQueryImpl = defaultSpawnQuery,
   resolveCliPath,
+  probeCliImpl = probeClaudeCli,
   now = Date.now,
 }) {
   if (!isString(dataDir) || dataDir === '') {
@@ -383,7 +389,7 @@ export function createClaudeCodeRuntime({
    * permission mode or effort) makes the canonical index be written back, so
    * the file and the memory agree.
    */
-  const start = async () => {
+  const loadIndex = async () => {
     let raw;
     try {
       raw = await fs.readFile(indexPath, 'utf8');
@@ -1003,6 +1009,55 @@ export function createClaudeCodeRuntime({
   // Lifecycle and surface
   // -------------------------------------------------------------------------
 
+  /** The last CLI availability probe, reported by `cliStatus()`; no path until one runs. */
+  let cliProbeStatus = { path: null, ok: false };
+
+  /**
+   * Resolves the CLI the backend will hand to the SDK and runs it once
+   * (`--version`) to report whether it actually works. The result is recorded
+   * for `cliStatus()` and logged once; a failure means the SDK's bundled
+   * executable will be used, which is what the runner already does when
+   * resolution returns null. The probe itself never throws and kills a child
+   * that outlives its own timeout, so this background work is bounded.
+   */
+  const probeCliAvailability = async () => {
+    const cliPath = await resolveCli();
+    if (!cliPath) {
+      cliProbeStatus = { path: null, ok: false };
+      console.info("[claude-code] no claude CLI found; the SDK's bundled executable will be used");
+      return;
+    }
+    const result = await probeCliImpl({ launchSpec: buildClaudeLaunchSpec(cliPath) });
+    cliProbeStatus = result.ok
+      ? { path: cliPath, ok: true, version: result.version }
+      : { path: cliPath, ok: false, error: result.error };
+    if (result.ok) {
+      console.info(`[claude-code] claude CLI ${cliPath} (${result.version})`);
+      return;
+    }
+    console.warn(`[claude-code] claude CLI ${cliPath} probe failed: ${result.error}; the SDK's bundled executable will be used`);
+  };
+
+  /**
+   * Loads the index, then probes the CLI in the background. The probe is
+   * diagnostics only — nothing a session does waits for it — while `start()`
+   * is awaited on the server's boot path, so awaiting it would add the probe's
+   * whole timeout to boot when the CLI hangs. A probe failure is logged and
+   * never rejects this call.
+   */
+  const start = async () => {
+    await loadIndex();
+    void probeCliAvailability().catch((error) => {
+      console.warn(`[claude-code] claude CLI probe failed: ${error?.message ?? error}; the SDK's bundled executable will be used`);
+    });
+  };
+
+  /**
+   * The last CLI availability probe: the resolved path and whether it ran.
+   * `{ path: null, ok: false }` before a probe or when no CLI was found.
+   */
+  const cliStatus = () => ({ ...cliProbeStatus });
+
   /** Disposes every live runner and drains index writes still in flight. */
   const stop = async () => {
     const entries = [...runners.values()];
@@ -1043,5 +1098,6 @@ export function createClaudeCodeRuntime({
     mergeSessionMetadata,
     start,
     stop,
+    cliStatus,
   };
 }

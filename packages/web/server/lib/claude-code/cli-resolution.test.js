@@ -1,6 +1,7 @@
+import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildClaudeLaunchSpec, resolveClaudeCliPath } from './cli-resolution.js';
+import { buildClaudeLaunchSpec, probeClaudeCli, resolveClaudeCliPath } from './cli-resolution.js';
 
 // searchPath is the resolver's only PATH IO, so a recording fake both answers
 // the lookup and proves which candidate names were asked for, and in which
@@ -15,6 +16,40 @@ const recordingSearchPath = (hits = {}) => {
 };
 
 const missSearchPath = () => null;
+
+/**
+ * A fake `spawnImpl` answering one canned run. The child is an EventEmitter
+ * with `stdout`/`stderr` emitters and a `kill` that records the call; with
+ * `close: false` it never closes (the timeout path), and an `error` is
+ * emitted instead of any output. Output and exit are emitted after the probe
+ * has attached its listeners, like a real child.
+ */
+const createFakeSpawn = ({ stdout = '', stderr = '', code = 0, close = true, error = null } = {}) => {
+  const calls = [];
+  const children = [];
+  const spawnImpl = (command, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.killCalls = 0;
+    child.kill = () => {
+      child.killCalls += 1;
+    };
+    calls.push({ command, args, options });
+    children.push(child);
+    if (error) {
+      queueMicrotask(() => child.emit('error', error));
+    } else if (close) {
+      queueMicrotask(() => {
+        if (stdout) child.stdout.emit('data', stdout);
+        if (stderr) child.stderr.emit('data', stderr);
+        child.emit('close', code);
+      });
+    }
+    return child;
+  };
+  return { calls, children, spawnImpl };
+};
 
 describe('resolveClaudeCliPath', () => {
   it('prefers settings.claudeBinary over CLAUDE_BINARY and PATH', () => {
@@ -257,5 +292,93 @@ describe('buildClaudeLaunchSpec', () => {
   it('returns null for an empty or missing path', () => {
     expect(buildClaudeLaunchSpec('', { platform: 'win32' })).toBeNull();
     expect(buildClaudeLaunchSpec(null, { platform: 'win32' })).toBeNull();
+  });
+});
+
+describe('probeClaudeCli', () => {
+  const launchSpec = {
+    command: 'C:\\npm\\claude.cmd',
+    args: ['/d', '/s', '/c', 'call', 'C:\\npm\\claude.cmd'],
+  };
+
+  it('runs the spec with --version and reports the first non-empty output line', async () => {
+    const { calls, spawnImpl } = createFakeSpawn({ stdout: '\n  2.1.0 (Claude Code)  \n', stderr: 'later line\n' });
+
+    const result = await probeClaudeCli({ launchSpec, spawnImpl });
+
+    expect(result).toEqual({ ok: true, version: '2.1.0 (Claude Code)' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe('C:\\npm\\claude.cmd');
+    expect(calls[0].args).toEqual(['/d', '/s', '/c', 'call', 'C:\\npm\\claude.cmd', '--version']);
+    expect(calls[0].options).toMatchObject({ windowsHide: true });
+  });
+
+  it('falls back to stderr for the version line', async () => {
+    const { spawnImpl } = createFakeSpawn({ stderr: '1.0.0\n' });
+
+    expect(await probeClaudeCli({ launchSpec, spawnImpl })).toEqual({ ok: true, version: '1.0.0' });
+  });
+
+  it('reports an unknown version when a zero-exit run printed nothing', async () => {
+    const { spawnImpl } = createFakeSpawn({});
+
+    expect(await probeClaudeCli({ launchSpec, spawnImpl })).toEqual({ ok: true, version: 'unknown' });
+  });
+
+  it('reports stderr as the failure on a non-zero exit, or the exit code when stderr is empty', async () => {
+    const reported = createFakeSpawn({ stderr: '  authentication required  \n', code: 1 });
+    expect(await probeClaudeCli({ launchSpec, spawnImpl: reported.spawnImpl })).toEqual({
+      ok: false,
+      error: 'authentication required',
+    });
+
+    const silent = createFakeSpawn({ code: 3 });
+    expect(await probeClaudeCli({ launchSpec, spawnImpl: silent.spawnImpl })).toEqual({
+      ok: false,
+      error: 'exit code 3',
+    });
+  });
+
+  it('kills a child that outlives the timeout and reports it', async () => {
+    const { children, spawnImpl } = createFakeSpawn({ close: false });
+
+    const result = await probeClaudeCli({ launchSpec, spawnImpl, timeoutMs: 20 });
+
+    expect(result).toEqual({ ok: false, error: 'timed out' });
+    expect(children[0].killCalls).toBe(1);
+  });
+
+  it('refuses a null or empty launch spec without spawning', async () => {
+    const { calls, spawnImpl } = createFakeSpawn({});
+
+    expect(await probeClaudeCli({ launchSpec: null, spawnImpl })).toEqual({
+      ok: false,
+      error: 'unsupported executable',
+    });
+    expect(await probeClaudeCli({ launchSpec: { command: '  ', args: [] }, spawnImpl })).toEqual({
+      ok: false,
+      error: 'unsupported executable',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('reports a spawn error instead of waiting out the timeout', async () => {
+    const { spawnImpl } = createFakeSpawn({ error: new Error('spawn C:\\missing\\claude.exe ENOENT') });
+
+    expect(await probeClaudeCli({ launchSpec, spawnImpl })).toEqual({
+      ok: false,
+      error: 'spawn C:\\missing\\claude.exe ENOENT',
+    });
+  });
+
+  it('resolves a spawn that throws synchronously', async () => {
+    const spawnImpl = () => {
+      throw new Error('EINVAL: invalid spawn options');
+    };
+
+    expect(await probeClaudeCli({ launchSpec, spawnImpl })).toEqual({
+      ok: false,
+      error: 'EINVAL: invalid spawn options',
+    });
   });
 });
