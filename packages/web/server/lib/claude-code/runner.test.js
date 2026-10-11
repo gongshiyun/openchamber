@@ -1051,8 +1051,8 @@ describe('interrupt and failure', () => {
     expect(eventsOfType(emitted, 'session.execution.interrupted')[0].data.reason).toBe('idle');
   });
 
-  test('a park left behind by a settled turn does not keep the runner alive', async () => {
-    const { runner, fake, spawns, emitted, idleCalls } = createHarness({ factory: { idleMs: 30 } });
+  test('a turn that settles answers its parked request', async () => {
+    const { runner, fake, spawns, emitted } = createHarness();
 
     await runner.send({ text: 'run tests', messageID: 'msg_1' });
     const canUseTool = spawns[0].options.canUseTool;
@@ -1060,15 +1060,10 @@ describe('interrupt and failure', () => {
     await waitFor(() => eventsOfType(emitted, 'permission.asked').length === 1);
     const request = eventsOfType(emitted, 'permission.asked')[0];
 
-    // The turn settles (e.g. an interrupt racing the request) while the
-    // approval is still parked.
+    // The turn settles (a result arriving while the approval is still parked)
+    // and the park dies with it: denied, reported, out of the list.
     fake.push(successResult());
     await waitFor(() => runner.isBusy() === false);
-    expect(runner.pendingPermissionRequests()).toEqual([request.data]);
-
-    // The stale park must not keep the runner alive: the next idle window
-    // rejects it (the interrupt path, so clients clear it) and then reaps.
-    await waitFor(() => idleCalls.length === 1);
     expect(await answer).toEqual({ behavior: 'deny', message: 'Interrupted' });
     expect(runner.pendingPermissionRequests()).toEqual([]);
     expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(1);
@@ -1077,6 +1072,69 @@ describe('interrupt and failure', () => {
       requestID: request.data.id,
       reply: 'reject',
     });
+  });
+
+  test('a tool call after the turn settled is denied without parking', async () => {
+    const { runner, fake, spawns, emitted } = createHarness();
+
+    await runner.send({ text: 'hi', messageID: 'msg_1' });
+    fake.push(successResult());
+    await waitFor(() => runner.isBusy() === false);
+
+    const canUseTool = spawns[0].options.canUseTool;
+    const answer = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_9' });
+    expect(await answer).toEqual({ behavior: 'deny', message: 'Interrupted' });
+    expect(eventsOfType(emitted, 'permission.asked')).toHaveLength(0);
+    expect(runner.pendingPermissionRequests()).toEqual([]);
+  });
+
+  test('a park created after the interrupt is answered when the turn force-settles', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const { runner, fake, spawns, emitted } = createHarness();
+
+      await runner.send({ text: 'long task', messageID: 'msg_1' });
+      const canUseTool = spawns[0].options.canUseTool;
+      const first = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_1' });
+      expect(eventsOfType(emitted, 'permission.asked')).toHaveLength(1);
+
+      // Stop: the parked request dies with the turn.
+      const interrupted = runner.interrupt();
+      expect(await first).toEqual({ behavior: 'deny', message: 'Interrupted' });
+
+      // The denial makes the SDK try the tool again; that park lands after the
+      // interrupt's own answer. The stream never settles, so only the
+      // force-settle ends the turn — and it must answer this park too.
+      const retry = canUseTool('Bash', { command: 'bun test' }, { toolUseID: 'toolu_2' });
+      expect(eventsOfType(emitted, 'permission.asked')).toHaveLength(2);
+      expect(runner.pendingPermissionRequests()).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await interrupted;
+      expect(await retry).toEqual({ behavior: 'deny', message: 'Interrupted' });
+      expect(runner.pendingPermissionRequests()).toEqual([]);
+      expect(runner.isBusy()).toBe(false);
+      expect(eventsOfType(emitted, 'session.execution.interrupted')).toHaveLength(1);
+      expect(eventsOfType(emitted, 'permission.replied')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  test('messages that arrive after the turn settled are not translated', async () => {
+    const { runner, fake, emitted } = createHarness();
+
+    await runner.send({ text: 'hi', messageID: 'msg_1' });
+    fake.push(successResult());
+    await waitFor(() => runner.isBusy() === false);
+    const settled = emitted.length;
+
+    fake.push(blockStart(0, { type: 'text' }));
+    fake.push(blockDelta(0, { type: 'text_delta', text: 'late' }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(emitted.length).toBe(settled);
   });
 
   test('dispose is idempotent and closes the query once', async () => {

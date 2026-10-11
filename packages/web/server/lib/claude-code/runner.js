@@ -438,9 +438,19 @@ export function createRunnerFactory({
       interruptTimer = null;
     };
 
+    // The Agent SDK does not cancel a parked approval when its turn ends (an
+    // interrupt, a settle, or a failure): the runner answers whatever is left
+    // parked — the request is denied, `permission.replied` tells clients, and
+    // the SDK is not left blocked on a request nobody owns. Every turn end
+    // funnels through `finishTurn`, so this is the one place to do it.
+    const abortParkedPermissions = () => {
+      for (const entry of [...pendingPermissions.values()]) entry.abort();
+    };
+
     const finishTurn = () => {
       state.busy = false;
       state.assistantMessageID = null;
+      abortParkedPermissions();
       resetIdleTimer();
       const next = pendingSends.shift();
       if (next) void startTurn(next);
@@ -546,6 +556,10 @@ export function createRunnerFactory({
         handleResult(message);
         return;
       }
+      // A message that arrives after its turn settled (the trailing stream of a
+      // force-settled interrupt, or a denial continuation) must not be
+      // translated: it would append to a turn the clients already saw end.
+      if (!state.busy) return;
       publishTranslated(translator.translate(message));
     };
 
@@ -596,9 +610,9 @@ export function createRunnerFactory({
       if (state.disposed) return;
       // A running turn parked on a permission request is waiting on the user,
       // not idle: restart the window instead of settling and disposing under it.
-      // A park left behind by a settled turn is stale: it is rejected through
-      // the same path an interrupt uses, so the clients' docks clear, and it
-      // must not keep the runner alive.
+      // A park cannot outlive its turn (`finishTurn` answers what is left), but
+      // one that somehow did would be rejected here instead of keeping the
+      // runner alive.
       if (pendingPermissions.size > 0) {
         if (state.busy) {
           resetIdleTimer();
@@ -654,8 +668,10 @@ export function createRunnerFactory({
       }
       // A turn parked on an approval has no approval left once the user stops
       // it: deny the parked requests so the list and the dock clear, and the
-      // SDK is not left blocking on a request nobody owns.
-      for (const entry of [...pendingPermissions.values()]) entry.abort();
+      // SDK is not left blocking on a request nobody owns. A denial the SDK
+      // turns into another tool call parks again, so `finishTurn` repeats this
+      // when the turn really ends.
+      abortParkedPermissions();
       try {
         await interrupting;
       } catch {
@@ -682,6 +698,10 @@ export function createRunnerFactory({
 
     const canUseTool = async (toolName, input, options = {}) => {
       if (state.disposed) return { behavior: 'deny', message: 'Session closed' };
+      // A tool call can only belong to the running turn; one that arrives after
+      // the turn settled (the SDK's denial continuation) is stale and is denied
+      // without parking, so nothing announces a request nobody owns.
+      if (!state.busy) return { behavior: 'deny', message: 'Interrupted' };
       if (alwaysAllowed.has(toolName)) return { behavior: 'allow' };
 
       const permissionID = createPermissionId();
