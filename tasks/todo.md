@@ -31,6 +31,22 @@
 - 验证：各模块聚焦测试（129 个 claude-code 测试）；真实 SDK 单回合冒烟（认证 + 流形状 + 翻译器）；服务端 E2E（创建/流式/权限审批 once/工具写文件/列表/消息/元数据）；UI 浏览器（后端选择器、Claude 模型控件、OpenCode 控件隐藏）。
 - 已知事项：`buildClaudeLaunchSpec` 无生产调用方（文档已注明）；`settings-helpers` 打包测试与 `lib/opencode` 部分用例为 Windows 环境既有失败；移动端 composer 不在 v1。
 
+## 收尾冲刺（P1/P2/P3，2026-10-11 起）
+- [ ] P1.1 不支持的入口对 Claude 会话隐藏（compact/command/fork/!/shell/diff/提交信息）
+- [ ] P1.2 挂起权限的恢复（适配器端点 + UI 会话打开时拉取）
+- [ ] P1.3 品牌文案按会话后端显示（错误/状态行不再写 OpenCode）
+- [ ] P1.4 停止埋点 + 权限挂起 30 分钟自动拒绝安全网
+- [ ] P1.5 Goals / 定时任务 / multi-run / walkthrough 入口对 Claude 会话隐藏
+- [ ] P2.1 首回合冷启动提示（"正在启动 Claude…"）
+- [ ] P2.2 用量与成本接入（cost/tokens 累计 + session.usage.updated）
+- [ ] P2.3 标题模型化（首行文本兜底 + haiku 一次性生成）
+- [ ] P2.4 权限模式（default/acceptEdits/bypass）与 effort 切换（适配器端点 + composer 控件）
+- [ ] P2.5 附件支持（图片/文本 → SDK content blocks）；@agent/skills 提及处置；子代理维持工具卡展示
+- [ ] P3.3 CORS 允许头回归测试
+- [ ] P3.4 claude CLI 可用性探测（启用 buildClaudeLaunchSpec）
+- [ ] P3.5 上游提案文档 + VS Code 验证；本地 tag，推送等用户确认
+- 排除项（用户确认）：终端面板（需 VS Spectre 库）、移动端 composer
+
 ## 记录
 - 2026-10-11 计划评审结束；设计文档经终审修订（f0a8d53）。
 - 实现规则：并行 subagent 只碰各自文件、只跑单测；门禁由主会话合并后串行跑一次；不推送远端。
